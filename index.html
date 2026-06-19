@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学习笔记 · 索引</title>
+<style>
+  :root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;}
+  *,*::before,*::after{box-sizing:border-box}
+  body{font-family:ui-serif,Georgia,"Noto Serif SC","Source Han Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65;}
+  main{max-width:900px;margin:0 auto;padding:48px 24px 80px;}
+  h1{font-size:2.35rem;line-height:1.15;margin:.2rem 0 .5rem;}
+  h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line);font-size:1.5rem;}
+  a{color:#2457a6;text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  .subtitle{color:var(--muted);font-size:1.05rem;margin-bottom:2rem;}
+  .module-section{margin-bottom:2.5rem;}
+  .lesson-list{list-style:none;padding:0;margin:0;}
+  .lesson-item{display:flex;align-items:baseline;gap:1rem;padding:.65rem 0;border-bottom:1px solid var(--line);}
+  .lesson-item:last-child{border-bottom:none;}
+  .lesson-num{color:var(--muted);font-size:.85rem;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;min-width:4.5rem;flex-shrink:0;}
+  .lesson-title{font-size:1.05rem;}
+  .empty-msg{color:var(--muted);font-style:italic;padding:1rem 0;}
+  .footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem;}
+  @media (max-width:600px){
+    main{padding:24px 16px 60px;}
+    h1{font-size:1.8rem;}
+    .lesson-item{flex-direction:column;gap:.15rem;padding:.8rem 0;}
+    .lesson-num{min-width:auto;font-size:.8rem;}
+    .lesson-title{font-size:1rem;}
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>📖 学习笔记</h1>
+  <p class="subtitle">共 13 课 · 自动生成于 2026-06-19</p>
+
+    <section class="module-section">
+      <h2>llama</h2>
+      <ul class="lesson-list">
+      <li class="lesson-item"><span class="lesson-num">0001-llama-cpp-mental-model</span><a class="lesson-title" href="llama/docs/lessons/0001-llama-cpp-mental-model.html">Lesson 0001 — llama.cpp 的最小心智模型</a></li>
+      <li class="lesson-item"><span class="lesson-num">0002-windows-cuda-server-first-run</span><a class="lesson-title" href="llama/docs/lessons/0002-windows-cuda-server-first-run.html">Lesson 0002 — Windows CUDA 版 llama.cpp 与第一个 API 服务</a></li>
+      <li class="lesson-item"><span class="lesson-num">0003-gguf-quantization-selection</span><a class="lesson-title" href="llama/docs/lessons/0003-gguf-quantization-selection.html">Lesson 0003 — 如何选择 GGUF 模型与量化版本</a></li>
+      <li class="lesson-item"><span class="lesson-num">0004-core-parameters-deep-dive</span><a class="lesson-title" href="llama/docs/lessons/0004-core-parameters-deep-dive.html">Lesson 0004 — 核心参数原理详解</a></li>
+      <li class="lesson-item"><span class="lesson-num">0004-core-params-deep-dive</span><a class="lesson-title" href="llama/docs/lessons/0004-core-params-deep-dive.html">Lesson 0004 — 核心参数原理详解</a></li>
+      <li class="lesson-item"><span class="lesson-num">0005-vram-optimization</span><a class="lesson-title" href="llama/docs/lessons/0005-vram-optimization.html">Lesson 0005 — Flash Attention、KV cache 量化与显存优化</a></li>
+      <li class="lesson-item"><span class="lesson-num">0006-agent-integration</span><a class="lesson-title" href="llama/docs/lessons/0006-agent-integration.html">Lesson 0006 — 对接 Agent：OpenAI API、JSON schema、Function calling</a></li>
+      <li class="lesson-item"><span class="lesson-num">0007-hands-on-full-pipeline</span><a class="lesson-title" href="llama/docs/lessons/0007-hands-on-full-pipeline.html">Lesson 0007 — 实操：完整链路从模型下载到 Agent 调用</a></li>
+      </ul>
+    </section>
+
+    <section class="module-section">
+      <h2>quant</h2>
+      <ul class="lesson-list">
+      <li class="lesson-item"><span class="lesson-num">0001-forget-fp16</span><a class="lesson-title" href="quant/docs/lessons/0001-forget-fp16.html">Lesson 1: Forget FP16 — 为什么需要量化</a></li>
+      <li class="lesson-item"><span class="lesson-num">0002-gptq-compensation</span><a class="lesson-title" href="quant/docs/lessons/0002-gptq-compensation.html">Lesson 2: GPTQ — 量化不再是一次孤立事件</a></li>
+      <li class="lesson-item"><span class="lesson-num">0003-awq-activation-aware</span><a class="lesson-title" href="quant/docs/lessons/0003-awq-activation-aware.html">Lesson 3: AWQ — 保护重要的权重</a></li>
+      <li class="lesson-item"><span class="lesson-num">0004-gguf-kquants</span><a class="lesson-title" href="quant/docs/lessons/0004-gguf-kquants.html">Lesson 4: GGUF &amp; K-Quants — 本地部署的通用语言</a></li>
+      <li class="lesson-item"><span class="lesson-num">0005-hands-on-quantization</span><a class="lesson-title" href="quant/docs/lessons/0005-hands-on-quantization.html">Lesson 5: 动手量化一个真正的模型</a></li>
+      </ul>
+    </section>
+
+  <p class="footer">自动生成 · <code>scripts/generate-index.js</code></p>
+</main>
+</body>
+</html>

@@ -1,0 +1,15 @@
+#!/bin/sh
+#
+# pre-commit hook — auto-generate index.html before each commit.
+#
+# Install: git config core.hooksPath .githooks
+#
+
+ROOT="$(git rev-parse --show-toplevel)" || exit 1
+
+node "$ROOT/scripts/generate-index.js" || exit $?
+
+# Stage index.html only if it actually changed (supports both tracked and untracked)
+if [ -n "$(git status --porcelain -- "$ROOT/index.html")" ]; then
+  git add "$ROOT/index.html"
+fi
