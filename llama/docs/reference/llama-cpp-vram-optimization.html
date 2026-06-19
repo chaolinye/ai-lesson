@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama.cpp 显存优化速查</title>
+<style>
+ body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;max-width:960px;margin:48px auto;padding:0 24px;line-height:1.65;color:#1d1d1f;background:#fffdf8}
+ h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}
+ table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid #ddd;padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}
+ code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;padding:.08rem .28rem;border-radius:4px}
+ pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px}pre code{background:transparent;padding:0;color:inherit}
+ a{color:#2457a6}.note{background:#f7f1df;border-left:4px solid #8a5a00;padding:.8rem 1rem;margin:1rem 0}.good{color:#137333}.bad{color:#b3261e}
+ .card{border:1px solid #ded6c7;border-radius:10px;padding:1rem;background:#fffaf0;margin:1rem 0}
+</style>
+</head>
+<body>
+<h1>llama.cpp 显存优化速查</h1>
+<p>基于官方文档与社区实践。目标：在 16GB 显存上最大化模型大小、上下文长度、并发数。</p>
+
+<h2>显存占用公式（回顾）</h2>
+<pre><code>总 VRAM = 量化后权重 + KV cache × 并发数 + 计算缓冲 + 系统/驱动开销</code></pre>
+
+<h2>优化技术一览</h2>
+<table>
+<thead><tr><th>技术</th><th>参数</th><th>省什么</th><th>省多少</th><th>代价</th></tr></thead>
+<tbody>
+<tr><td>Flash Attention</td><td><code>-fa on</code></td><td>KV cache 显存</td><td>显著（长上下文尤其明显）</td><td>极小（新版本默认启用）</td></tr>
+<tr><td>KV cache 量化</td><td><code>-ctk q8_0 -ctv q8_0</code></td><td>KV cache 显存</td><td>f16→q8_0 省 50%</td><td>轻微精度损失</td></tr>
+<tr><td>KV cache 量化（激进）</td><td><code>-ctk q4_0 -ctv q4_0</code></td><td>KV cache 显存</td><td>f16→q4_0 省 75%</td><td>更大精度损失</td></tr>
+<tr><td>减少 GPU offload</td><td><code>-ngl 20</code>（而非 all）</td><td>权重显存</td><td>部分层移回 CPU</td><td>速度下降</td></tr>
+<tr><td>降低 ubatch</td><td><code>-ub 256</code></td><td>计算缓冲</td><td>减少峰值显存</td><td>prefill 变慢</td></tr>
+<tr><td>降低并发</td><td><code>-np 1</code></td><td>KV cache 倍率</td><td>×1 而非 ×N</td><td>一次只能处理一个请求</td></tr>
+<tr><td>更低量化</td><td>选 Q4_K_M 而非 Q5_K_M</td><td>权重</td><td>约 0.7GB (7B)</td><td>质量损失</td></tr>
+<tr><td>禁用 mmap</td><td><code>--no-mmap</code></td><td>减少 pageout</td><td>不定</td><td>加载更慢</td></tr>
+</tbody>
+</table>
+
+<h2>KV cache 量化对比（近似）</h2>
+<table>
+<thead><tr><th>类型</th><th>每 token 大小 (8B)</th><th>8K 上下文 KV cache</th><th>32K 上下文 KV cache</th></tr></thead>
+<tbody>
+<tr><td>f16（默认）</td><td>0.5 MB</td><td>~4.0 GB</td><td>~16.0 GB</td></tr>
+<tr><td>q8_0</td><td>0.25 MB</td><td>~2.0 GB</td><td>~8.0 GB</td></tr>
+<tr><td>q4_0</td><td>0.125 MB</td><td>~1.0 GB</td><td>~4.0 GB</td></tr>
+</tbody>
+</table>
+
+<h2>场景策略</h2>
+
+<div class="card">
+<b>场景 1：8B Q5_K_M，8K 上下文，单并发</b><br>
+权重 ~5.5 GB + KV cache f16 ~4 GB + 余量 ~2 GB = ~11.5 GB → ✅ 舒适
+</div>
+
+<div class="card">
+<b>场景 2：8B Q5_K_M，32K 上下文，单并发</b><br>
+权重 ~5.5 GB + KV cache f16 ~16 GB = ~21.5 GB → ❌ 超显存<br>
+方案：-ctk q8_0 -ctv q8_0 → KV cache ~8 GB → 总 ~15.5 GB → ✅ 有风险，建议再降 -ngl
+</div>
+
+<div class="card">
+<b>场景 3：14B Q4_K_M，8K 上下文，单并发</b><br>
+权重 ~8.2 GB + KV cache f16 ~7 GB + 余量 ~2 GB = ~17.2 GB → ⚠️ 略超<br>
+方案：-fa on + -ctk q8_0 -ctv q8_0 → KV cache ~3.5 GB → 总 ~13.7 GB → ✅
+</div>
+
+<div class="card">
+<b>场景 4：8B Q4_K_M，8K 上下文，4 并发</b><br>
+权重 ~4.1 GB + KV cache f16 ×4 ~16 GB → ❌ 超显存<br>
+方案：-ctk q8_0 -ctv q8_0 → KV cache ×4 ~8 GB → 总 ~14.1 GB → ⚠️ 有风险
+</div>
+
+<h2>相关参数速查</h2>
+<table>
+<thead><tr><th>参数</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td><code>-fa on</code></td><td>Flash Attention。节省注意力计算显存。新版本默认 auto。</td></tr>
+<tr><td><code>-ctk TYPE</code></td><td>K cache 数据类型：f32 / f16 / bf16 / q8_0 / q4_0 等。默认 f16。</td></tr>
+<tr><td><code>-ctv TYPE</code></td><td>V cache 数据类型。同上。</td></tr>
+<tr><td><code>-kvo / -nkvo</code></td><td>KV cache 是否 offload 到 GPU。默认开启。</td></tr>
+<tr><td><code>-ngl N</code></td><td>GPU offload 层数。降低可省显存但降速。</td></tr>
+<tr><td><code>-ub N</code></td><td>物理 micro-batch。OOM 安全阀。</td></tr>
+<tr><td><code>-np N</code></td><td>并行 slot 数。每个 slot 独立 KV cache。</td></tr>
+<tr><td><code>-cb / -nocb</code></td><td>continuous batching。多请求时提高 GPU 利用率。</td></tr>
+<tr><td><code>--context-shift</code></td><td>上下文转移。超出上下文时滑动窗口，避免重新计算。</td></tr>
+<tr><td><code>--no-mmap</code></td><td>关闭内存映射。加载更慢但减少 pageout。</td></tr>
+</tbody>
+</table>
+
+<h2>参考</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp/pull/15434">PR #15434 — FA + max GPU layers by default</a></li>
+<li><a href="https://github.com/ggml-org/llama.cpp/pull/2969">PR #2969 — KV cache q8_0 quantization</a></li>
+<li><a href="https://github.com/ggml-org/llama.cpp/pull/4312">PR #4312 — Support quantum K cache</a></li>
+<li><a href="https://github.com/ggml-org/llama.cpp/discussions/8879">Discussion #8879 — Lower VRAM without lowering context</a></li>
+</ul>
+</body>
+</html>

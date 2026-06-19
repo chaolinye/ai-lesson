@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0001 — llama.cpp 的最小心智模型</title>
+<style>
+  :root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333;--bad:#b3261e;}
+  body{font-family: ui-serif, Georgia, "Noto Serif SC", "Source Han Serif SC", serif; margin:0; background:var(--paper); color:var(--ink); line-height:1.65;}
+  main{max-width:900px; margin:0 auto; padding:48px 24px 80px;}
+  h1{font-size:2.35rem; line-height:1.15; margin:.2rem 0 .5rem;} h2{margin-top:2.2rem; padding-top:1rem; border-top:1px solid var(--line);} h3{margin-top:1.4rem}
+  .subtitle{color:var(--muted); font-size:1.05rem} .mission{background:var(--panel); border-left:4px solid var(--accent); padding:1rem 1.2rem; margin:1.5rem 0;}
+  code{font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background:#f0eadf; border:1px solid #e5dccd; border-radius:4px; padding:.08rem .28rem;}
+  pre{background:#1f2937; color:#f9fafb; padding:1rem; border-radius:8px; overflow:auto;} pre code{background:transparent; border:0; color:inherit; padding:0;}
+  a{color:#2457a6} .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem;}
+  .card{border:1px solid var(--line); border-radius:10px; padding:1rem; background:#fffaf0;} .card b{color:#3b2a0a}
+  .flow{font-family: ui-monospace, Consolas, monospace; background:#fffaf0; border:1px solid var(--line); padding:1rem; border-radius:10px; white-space:pre-wrap;}
+  .small{font-size:.92rem; color:var(--muted)} button{font:inherit; padding:.45rem .75rem; border:1px solid var(--line); border-radius:7px; background:#fff; cursor:pointer; margin:.25rem .3rem .25rem 0} button:hover{border-color:var(--accent)}
+  .answer{margin:.5rem 0 1rem; font-weight:700}.good{color:var(--good)}.bad{color:var(--bad)}
+  table{border-collapse:collapse; width:100%; margin:1rem 0;} th,td{border-bottom:1px solid var(--line); padding:.55rem; text-align:left; vertical-align:top;} th{background:#f7f1df;}
+  .print-note{font-size:.9rem; color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <p class="small">Lesson 0001 · 原理优先路线 · <a href="../reference/llama-cpp-glossary.html">术语表</a></p>
+  <h1>llama.cpp 的最小心智模型</h1>
+  <p class="subtitle">今天只学一件事：当你启动 <code>llama-server -m model.gguf</code> 时，机器里到底有哪几块东西在协作。</p>
+
+  <section class="mission">
+    <b>与你的任务的关系：</b>你最终要在 Windows + NVIDIA 5060 Ti 16GB 上跑本地模型，并提供 OpenAI API 给 Agent。后续所有安装、量化选择、显存估算、参数调优，都依赖这一课的模型：<b>权重占空间，KV cache 随上下文增长，GPU offload 决定算在哪里发生，采样参数决定 token 如何被选中。</b>
+  </section>
+
+  <h2>1. 先给 llama.cpp 一个定位</h2>
+  <p><a href="https://github.com/ggml-org/llama.cpp">llama.cpp 官方 README</a> 把它描述为一个高性能本地推理项目：支持 GGUF 模型、1.5 到 8 bit 等多种量化、CUDA/Metal/Vulkan 等后端、CPU+GPU 混合推理，并包含 OpenAI-compatible HTTP server。你可以把它理解成：</p>
+
+  <div class="grid">
+    <div class="card"><b>不是训练框架</b><br>主要用于 inference，也就是“拿训练好的模型来生成 token”。</div>
+    <div class="card"><b>不是模型本身</b><br>模型在 <code>.gguf</code> 文件里；llama.cpp 是读取并执行它的引擎。</div>
+    <div class="card"><b>不是只有 CPU</b><br>官方构建文档支持 CUDA；你的 5060 Ti 应优先走 CUDA 后端。</div>
+    <div class="card"><b>可以当 API 服务</b><br><code>llama-server</code> 提供 OpenAI-compatible chat/completions endpoint。</div>
+  </div>
+
+  <h2>2. 一次本地推理的五块拼图</h2>
+  <p>先不要背参数。先看数据流：</p>
+  <div class="flow">GGUF 模型文件
+  ↓ 读取权重、tokenizer、元数据
+llama.cpp runtime
+  ↓ 根据 -ngl 决定哪些层放 GPU，哪些留 CPU
+Prompt prefill
+  ↓ 为已有上下文建立 KV cache
+Token decode loop
+  ↓ 每次算出 logits，再按 temp/top-p 等采样
+输出 token → 拼成回复</div>
+
+  <h3>拼图 A：GGUF 文件</h3>
+  <p><code>GGUF</code> 是 llama.cpp 当前主要使用的模型格式。官方 README 说明 llama.cpp 需要 GGUF 格式模型；其他格式通常要转换。GGUF 通常包含权重、tokenizer 信息、模型元数据。你运行时用：</p>
+  <pre><code>llama-server -m path\to\model.gguf</code></pre>
+  <p>因此 <code>-m</code> 不是“选择模型名字”，而是“指定实际要映射进内存的模型文件”。</p>
+
+  <h3>拼图 B：权重与量化</h3>
+  <p>模型权重是固定参数，加载后会占用 RAM/VRAM。量化就是用更少 bit 编码权重。官方 README 明确列出 llama.cpp 支持多种 1.5-bit 到 8-bit 量化；官方 <a href="https://github.com/ggml-org/llama.cpp/wiki/Tensor-Encoding-Schemes">Tensor Encoding Schemes wiki</a> 展示了不同张量编码方案。</p>
+  <table>
+    <thead><tr><th>量化</th><th>粗略直觉</th><th>常见用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>Q4_K_M</code></td><td>常用 4-bit K-quant，中等质量/小体积折中。</td><td>显存有限时的默认候选。</td></tr>
+      <tr><td><code>Q5_K_M</code></td><td>比 Q4 更大，通常质量更稳。</td><td>16GB 显存上跑 7B/8B/部分 14B 时常值得考虑。</td></tr>
+      <tr><td><code>Q8_0</code></td><td>更接近高精度，但体积大。</td><td>小模型、质量敏感、显存足够时。</td></tr>
+    </tbody>
+  </table>
+  <p class="small">今天先记原则：量化主要影响“权重占用”和“质量/速度折中”；但上下文拉长时，另一个大头是 KV cache。</p>
+
+  <h3>拼图 C：KV cache</h3>
+  <p>Transformer 生成第 1000 个 token 时，不会每步从零重算前 999 个 token 的全部注意力状态，而是缓存先前 token 的 Key/Value。这个缓存就叫 <a href="../reference/llama-cpp-glossary.html">KV cache</a>。</p>
+  <p><b>关键：</b>模型文件大小由权重决定；但运行时内存还会随 <code>context size</code> 和并发数增长。也就是：</p>
+  <div class="flow">总显存压力 ≈ 量化后的模型权重 + KV cache + 计算临时缓冲 + server/驱动开销</div>
+  <p>所以 16GB 显存不是只问“模型文件是不是小于 16GB”。如果你把 <code>-c</code> 设很大，或者 server 并发开很高，KV cache 会把剩余显存吃掉。</p>
+
+  <h3>拼图 D：GPU offload</h3>
+  <p>llama.cpp 支持 CPU+GPU 混合推理。CUDA 构建见官方 <a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md">build docs</a>。常见参数 <code>-ngl</code> / <code>--n-gpu-layers</code> 的含义是：把多少层模型计算放到 GPU。</p>
+  <p>如果显存够，通常希望尽可能多放 GPU；如果显存不够，就减少 <code>-ngl</code>，让部分层回到 CPU，代价是速度下降。</p>
+
+  <h3>拼图 E：采样</h3>
+  <p>模型每一步输出的是一组 logits：每个候选 token 的分数。采样参数决定“从这些候选里怎么选下一个 token”。</p>
+  <ul>
+    <li><code>--temp</code>：温度。低温更确定，高温更随机。</li>
+    <li><code>--top-p</code>：只在累计概率达到 p 的候选集合里采样。</li>
+  </ul>
+  <p>这类参数主要影响输出风格，不会让模型“知道更多”。</p>
+
+  <h2>3. 把参数放回心智模型</h2>
+  <table>
+    <thead><tr><th>你看到的参数</th><th>它属于哪块拼图</th><th>第一直觉</th></tr></thead>
+    <tbody>
+      <tr><td><code>-m model.gguf</code></td><td>GGUF 文件</td><td>加载哪个模型。</td></tr>
+      <tr><td><code>-ngl 99</code></td><td>GPU offload</td><td>尽量把层放进 GPU；不够显存就降。</td></tr>
+      <tr><td><code>-c 8192</code></td><td>KV cache / context</td><td>更长上下文，但更多运行时内存。</td></tr>
+      <tr><td><code>-np 2</code></td><td>server 并发 / KV cache</td><td>更多并发 slot，但 KV cache 需求上升。</td></tr>
+      <tr><td><code>--temp 0.7</code></td><td>采样</td><td>输出随机性。</td></tr>
+      <tr><td><code>--top-p 0.9</code></td><td>采样</td><td>候选 token 截断范围。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. 你的 5060 Ti 16GB 的初始策略</h2>
+  <p>后续实操时，我们会验证而不是猜。但初始策略可以是：</p>
+  <ol>
+    <li>先选 7B/8B 级别 instruct GGUF 模型，避免一开始被显存和模型兼容性干扰。</li>
+    <li>量化先选 <code>Q5_K_M</code> 或 <code>Q4_K_M</code>：前者更稳，后者更省。</li>
+    <li><code>-ngl</code> 先设大，例如 <code>-ngl 99</code>，让 llama.cpp 尽量 offload；如果 OOM 再降。</li>
+    <li><code>-c</code> 先从 <code>4096</code> 或 <code>8192</code> 开始，不要一上来追超长上下文。</li>
+    <li>先单并发跑通 OpenAI API，再讨论 <code>-np</code> 并发和 Agent 多请求。</li>
+  </ol>
+
+  <h2>5. 检索练习：不要看上文，先答</h2>
+  <p>点击前先在脑中回答。目标不是考试，是让概念进入长期记忆。</p>
+
+  <div class="card">
+    <p><b>Q1.</b> 为什么“模型文件 10GB，小于 16GB 显存”不等于“一定能稳定运行”？</p>
+    <button onclick="show('a1', true)">查看答案</button>
+    <div id="a1" class="answer"></div>
+  </div>
+  <div class="card">
+    <p><b>Q2.</b> <code>-ngl</code> 调的是采样风格、上下文长度，还是计算放在哪里？</p>
+    <button onclick="show('a2', true)">查看答案</button>
+    <div id="a2" class="answer"></div>
+  </div>
+  <div class="card">
+    <p><b>Q3.</b> <code>Q4_K_M</code> 和 <code>Q8_0</code> 的核心差别是什么？</p>
+    <button onclick="show('a3', true)">查看答案</button>
+    <div id="a3" class="answer"></div>
+  </div>
+
+  <h2>6. 下一课预告</h2>
+  <p>下一课建议进入：<b>Windows 上安装/获取 llama.cpp CUDA 版本，并用一个小 GGUF 模型启动 <code>llama-server</code></b>。我们会边做边解释每个参数，不会只给命令。</p>
+
+  <h2>推荐主源</h2>
+  <p>请优先阅读官方 README 的开头和 “Obtaining and quantizing models / llama-server” 部分：<a href="https://github.com/ggml-org/llama.cpp">https://github.com/ggml-org/llama.cpp</a>。如果有任何句子看不懂，直接问我；这就是你使用 agent teacher 的方式。</p>
+
+  <p class="print-note">打印提示：本页适合打印或保存为 PDF；术语请回到 <a href="../reference/llama-cpp-glossary.html">llama.cpp 术语速查</a>。</p>
+</main>
+<script>
+function show(id){
+ const m={
+  a1:'因为运行时不只放模型权重，还需要 KV cache、计算缓冲、server/驱动开销；上下文越长、并发越高，KV cache 越大。',
+  a2:'计算放在哪里。-ngl / --n-gpu-layers 决定多少层 offload 到 GPU。',
+  a3:'它们是不同的权重量化/编码方案。Q4_K_M 更省空间，通常质量损失更大；Q8_0 更大，通常更接近高精度。'
+ };
+ document.getElementById(id).innerHTML='<span class="good">答案：</span>'+m[id];
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 1: Forget FP16 — 为什么需要量化</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&family=Source+Serif+4:opsz@8..60&display=swap');
+  :root { --width: 720px; --sans: 'Inter', -apple-system, sans-serif; --serif: 'Source Serif 4', Georgia, serif; }
+  body { font-family: var(--serif); max-width: var(--width); margin: 3rem auto; padding: 0 1.5rem; color: #1a1a1a; font-size: 1.05rem; line-height: 1.7; }
+  h1, h2, h3, h4 { font-family: var(--sans); font-weight: 600; line-height: 1.3; }
+  h1 { font-size: 2.2rem; margin-bottom: .2rem; letter-spacing: -.02em; }
+  .subtitle { font-family: var(--sans); color: #64748b; font-size: 1rem; margin-top: 0; margin-bottom: 2rem; }
+  h2 { font-size: 1.4rem; margin-top: 2.5rem; border-bottom: 1.5px solid #e2e8f0; padding-bottom: .35rem; }
+  h3 { font-size: 1.15rem; margin-top: 1.8rem; }
+  p { margin: 1rem 0; }
+  code { background: #f1f5f9; padding: .15rem .4rem; border-radius: 4px; font-size: .88em; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 1rem 1.2rem; border-radius: 8px; overflow-x: auto; font-size: .85rem; line-height: 1.5; }
+  pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+  .callout { background: #eff6ff; border-left: 4px solid #3b82f6; padding: .75rem 1rem; margin: 1.5rem 0; border-radius: 0 6px 6px 0; font-family: var(--sans); font-size: .95rem; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+  .callout.tip { background: #f0fdf4; border-left-color: #22c55e; }
+  .callout strong { color: #1e293b; }
+  table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; font-family: var(--sans); font-size: .9rem; }
+  th, td { border: 1px solid #e2e8f0; padding: .5rem .75rem; text-align: left; }
+  th { background: #f1f5f9; font-weight: 600; }
+  .math { font-family: 'Times New Roman', serif; font-style: italic; }
+  .exercise { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.2rem 1.5rem; margin: 2rem 0; }
+  .exercise h3 { margin-top: 0; color: #2563eb; }
+  .footnote { font-family: var(--sans); font-size: .85rem; color: #64748b; border-top: 1px solid #e2e8f0; margin-top: 3rem; padding-top: 1rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .tag { display: inline-block; background: #e0e7ff; color: #4338ca; font-family: var(--sans); font-size: .75rem; padding: .15rem .6rem; border-radius: 12px; margin-right: .3rem; }
+  .highlight-box { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border-radius: 12px; padding: 1.2rem 1.5rem; margin: 1.5rem 0; }
+  .highlight-box strong { color: #0369a1; }
+</style>
+</head>
+<body>
+
+<h1>Lesson 1: Forget FP16</h1>
+<p class="subtitle">为什么需要量化？一个 7B 模型的生存指南</p>
+
+<p>假设你刚下载了一个 <strong>7B 模型</strong>（比如 Llama-3-7B）。7B = 70 亿个参数。每个参数以 <strong>FP16</strong>（16 位浮点数）存储。</p>
+
+<div class="highlight-box">
+<strong>算一笔账：</strong><br>
+7,000,000,000 × 2 bytes = <strong>14 GB</strong> — 这只是权重，还没算 KV Cache、中间激活值。<br>
+一张 RTX 4090 有 24 GB VRAM，勉强够；一张 RTX 3060 有 12 GB，直接出局。
+</div>
+
+<p>而如果你把每个参数从 <strong>16 bits 压缩到 4 bits</strong>：</p>
+
+<p style="font-size: 1.4rem; text-align: center; font-weight: 600; font-family: var(--sans);">
+  14 GB → <span style="color: #059669;">3.5 GB</span>
+</p>
+
+<p>现在同样的 7B 模型，一个 8 GB 显存的显卡就能轻松跑起来。这就是量化存在的理由。</p>
+
+<h2>量化的核心直觉</h2>
+
+<p>量化的本质可以用一句话概括：</p>
+
+<blockquote style="font-family: var(--sans); font-size: 1.1rem; color: #475569; border-left: 3px solid #94a3b8; padding-left: 1rem; margin: 1.5rem 0;">
+  <strong>用更少的比特数来表示一个数值，接受一定的精度损失，换取内存和速度的巨大收益。</strong>
+</blockquote>
+
+<p>想象你有一把尺子：FP16 的尺子有 65,536 个刻度（2^16），可以非常精细地测量。INT4 的尺子只有 16 个刻度（2^4），你不得不把测量值"四舍五入"到最近的刻度上。</p>
+
+<div class="callout">
+<strong>💡 关键 insight：</strong>神经网络对权重的微小误差有很高的容忍度。模型不是 MySQL 数据库——它不需要"精确的"权重值，只需要"足够好的"权重值。量化就是利用这个特性，把不必要的精度砍掉。
+</div>
+
+<h2>量化的数学：映射 x → q</h2>
+
+<p>量化的核心操作就是一个线性映射（以对称量化为例）：</p>
+
+<p style="text-align: center; font-size: 1.2rem; font-family: 'Times New Roman', serif;">
+  q = round(x / scale)
+</p>
+
+<p>其中：</p>
+<ul>
+  <li><strong>x</strong>：原始浮点数（FP16）</li>
+  <li><strong>q</strong>：量化后的整数（INT4）</li>
+  <li><strong>scale</strong>：缩放因子 = max(|x|) / (2<sup>bits-1</sup> - 1)</li>
+</ul>
+
+<p>反过来，推理时做<strong>反量化</strong>：</p>
+
+<p style="text-align: center; font-size: 1.2rem; font-family: 'Times New Roman', serif;">
+  x̂ = q × scale
+</p>
+
+<p><strong>x̂</strong> 是重建的浮点数。因为 round() 操作，x̂ ≠ x —— 这之间的差就是<strong>量化误差</strong>。</p>
+
+<h3>一个例子</h3>
+
+<p>假设我们有一个权重矩阵的某一行：</p>
+
+<pre><code>x = [0.12, -0.87, 0.53, -0.04, 0.99, -0.33]
+
+# 对称 INT4 量化（范围 -7 ~ 7）
+scale = max(|x|) / 7 = 0.99 / 7 ≈ 0.1414
+
+# 量化
+q = round(x / scale) = [1, -6, 4, 0, 7, -2]
+
+# 反量化重建
+x̂ = q × scale = [0.14, -0.85, 0.57, 0, 0.99, -0.28]
+
+# 误差
+error = |x − x̂| = [0.02, 0.02, 0.04, 0.04, 0, 0.05]</code></pre>
+
+<p>最大值 <code>0.99</code> 被精确保存（因为它决定了 scale），但像 <code>-0.04</code> 这样的小值被直接舍入成 0。平均误差约 0.03——对于模型推理来说，这是可以接受的。</p>
+
+<h2>量化省了多少？</h2>
+
+<table>
+  <tr><th>精度</th><th>每参数比特</th><th>7B 模型大小</th><th>13B 模型大小</th><th>70B 模型大小</th></tr>
+  <tr><td>FP32</td><td>32</td><td>28 GB</td><td>52 GB</td><td>280 GB</td></tr>
+  <tr><td>FP16 / BF16</td><td>16</td><td>14 GB</td><td>26 GB</td><td>140 GB</td></tr>
+  <tr><td>INT8</td><td>8</td><td>7 GB</td><td>13 GB</td><td>70 GB</td></tr>
+  <tr><td><strong>INT4</strong></td><td><strong>4</strong></td><td><strong>3.5 GB</strong></td><td><strong>6.5 GB</strong></td><td><strong>35 GB</strong></td></tr>
+</table>
+
+<p>看到模式了吗？<strong>比特数减半，内存占用减半。</strong>从 FP16 到 INT4 就是 4× 压缩。</p>
+
+<h2>动手环节：用 PyTorch 实现基础量化</h2>
+
+<div class="exercise">
+<h3>📝 练习：手写一个对称量化器</h3>
+
+<p>打开你的 Python 环境，运行下面的代码。目标是：</p>
+<ol>
+  <li>生成一个随机权重矩阵（模拟 LLM 的线性层）</li>
+  <li>实现对称 INT4 量化</li>
+  <li>观察量化误差的分布</li>
+</ol>
+
+<pre><code>import torch
+import numpy as np
+
+def symmetric_quantize(x, bits=4):
+    """对称量化：x (FP16) → q (INT4)"""
+    # 找最大值确定 scale
+    max_val = x.abs().max()
+    q_max = 2**(bits - 1) - 1  # INT4 对称范围: -7 ~ 7
+    scale = max_val / q_max
+
+    # 量化
+    q = torch.round(x / scale).clamp(-q_max, q_max)
+    return q, scale
+
+def dequantize(q, scale):
+    """反量化：q (INT4) → x̂ (FP16)"""
+    return q * scale
+
+# 模拟一个 Llama 7B 的 q_proj 权重（一小块）
+torch.manual_seed(42)
+weight = torch.randn(64, 64) * 0.1  # 模拟一个 64×64 的权重块
+
+# 量化
+q, scale = symmetric_quantize(weight)
+weight_recon = dequantize(q, scale)
+
+# 评估误差
+mse = ((weight - weight_recon) ** 2).mean()
+max_err = (weight - weight_recon).abs().max()
+print(f"MSE:  {mse:.6f}")
+print(f"Max Error: {max_err:.6f}")
+print(f"Scale: {scale:.6f}")
+print(f"原始大小: {weight.element_size() * weight.numel() / 1024:.1f} KB")
+print(f"量化后:  {q.element_size() * q.numel() / 1024:.1f} KB (但实际存储在 INT4 阵列中)")
+</code></pre>
+
+<div class="callout tip">
+<strong>试试这个扩展：</strong>把 bits 改成 8 看看误差变化。再试试改成 2。观察 MSE 随比特数的变化曲线——为什么 4-bit 是"最佳平衡点"？
+</div>
+</div>
+
+<h2>量化不是免费的午餐</h2>
+
+<p>量化当然有代价。但关键在于——<strong>你的目标是什么？</strong></p>
+
+<ul>
+  <li>做<strong>推理</strong>（只是用模型）：4-bit 量化在大多数任务上只损失不到 1% 的性能。值得。</li>
+  <li>做<strong>微调</strong>：4-bit + LoRA (QLoRA) 是标准方案。基础权重保持量化，只训练小的适配器。</li>
+  <li>做<strong>数学推理</strong>（需要精确计算）：可能需要 8-bit 甚至保持 FP16。</li>
+</ul>
+
+<div class="callout warn">
+<strong>⚠️ 常见坑：</strong>很多人第一次量化后发现模型"变蠢了"。原因通常不是量化本身，而是：<br>
+① 量化方案选错了（比如用 Q2_K 跑数学题）<br>
+② 校准数据集和你的使用场景不匹配<br>
+③ 模型本来就很敏感（小模型量化损失更大）
+</div>
+
+<h2>下节课预告</h2>
+
+<p>这节课我们只做了<strong>朴素量化</strong>（naive round-to-nearest）。后面你会学到：</p>
+<ul>
+  <li>Lesson 2: <strong>GPTQ</strong> — 用 Hessian 矩阵指导量化，把误差补偿考虑进去</li>
+  <li>Lesson 3: <strong>AWQ</strong> — 激活值感知量化，保护"重要"权重</li>
+  <li>Lesson 4: <strong>GGUF & K-Quants</strong> — 本地部署的王者</li>
+  <li>Lesson 5: <strong>动手亲自量化一个模型</strong> — bitsandbytes, llama.cpp 实战</li>
+</ul>
+
+<h2>推荐阅读</h2>
+
+<ul>
+  <li><a href="https://newsletter.maartengrootendorst.com/p/a-visual-guide-to-quantization" target="_blank">A Visual Guide to Quantization — Maarten Grootendorst</a>（推荐先看这个，可视化做得极好）</li>
+  <li><a href="https://www.datacamp.com/tutorial/quantization-for-large-language-models" target="_blank">Quantization for Large Language Models — DataCamp</a></li>
+  <li>参考词汇表：<a href="../reference/glossary.html">LLM 量化词汇表</a></li>
+</ul>
+
+<h2>下一步</h2>
+
+<p>做完上面的练习后，有问题随时问我！你可以问：</p>
+<ul>
+  <li>"scale 是怎么算出来的？为什么除以 7 不是除以 8？"</li>
+  <li>"非对称量化跟对称量化有什么不同？"</li>
+  <li>"如果权重分布很极端（有大的 outlier），会怎么样？"</li>
+  <li>"我想看看真实模型量化后的效果对比"</li>
+</ul>
+
+<div class="footnote">
+  <p><strong>本课对应的学习记录：</strong><a href="../learning-records/0001-naive-quantization.html">LR-0001: 基础对称量化</a></p>
+  <p><strong>引用：</strong>Frantar et al., GPTQ (2023) | Lin et al., AWQ (2024) | Dettmers et al., QLoRA (2023)</p>
+</div>
+
+</body>
+</html>

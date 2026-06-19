@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 3: AWQ — 保护重要的权重</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&family=Source+Serif+4:opsz@8..60&display=swap');
+  :root { --width: 720px; --sans: 'Inter', -apple-system, sans-serif; --serif: 'Source Serif 4', Georgia, serif; }
+  body { font-family: var(--serif); max-width: var(--width); margin: 3rem auto; padding: 0 1.5rem; color: #1a1a1a; font-size: 1.05rem; line-height: 1.7; }
+  h1, h2, h3, h4 { font-family: var(--sans); font-weight: 600; line-height: 1.3; }
+  h1 { font-size: 2rem; margin-bottom: .2rem; letter-spacing: -.02em; }
+  .subtitle { font-family: var(--sans); color: #64748b; font-size: 1rem; margin-top: 0; margin-bottom: 2rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.5rem; border-bottom: 1.5px solid #e2e8f0; padding-bottom: .35rem; }
+  h3 { font-size: 1.1rem; margin-top: 1.8rem; }
+  p { margin: 1rem 0; }
+  code { background: #f1f5f9; padding: .15rem .4rem; border-radius: 4px; font-size: .88em; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 1rem 1.2rem; border-radius: 8px; overflow-x: auto; font-size: .82rem; line-height: 1.5; }
+  pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+  .callout { background: #eff6ff; border-left: 4px solid #3b82f6; padding: .75rem 1rem; margin: 1.5rem 0; border-radius: 0 6px 6px 0; font-family: var(--sans); font-size: .95rem; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+  .callout.tip { background: #f0fdf4; border-left-color: #22c55e; }
+  .callout.info { background: #faf5ff; border-left-color: #7c3aed; }
+  table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; font-family: var(--sans); font-size: .9rem; }
+  th, td { border: 1px solid #e2e8f0; padding: .5rem .75rem; text-align: left; }
+  th { background: #f1f5f9; font-weight: 600; }
+  .exercise { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.2rem 1.5rem; margin: 2rem 0; }
+  .exercise h3 { margin-top: 0; color: #2563eb; }
+  .footnote { font-family: var(--sans); font-size: .85rem; color: #64748b; border-top: 1px solid #e2e8f0; margin-top: 3rem; padding-top: 1rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .highlight-box { background: linear-gradient(135deg, #faf5ff, #f0e6ff); border-radius: 12px; padding: 1.2rem 1.5rem; margin: 1.5rem 0; }
+  .highlight-box strong { color: #6d28d9; }
+  .math { font-family: 'Times New Roman', serif; font-style: italic; }
+  .insight { background: #fdf4ff; border: 1px solid #f0abfc; border-radius: 8px; padding: 1rem 1.2rem; margin: 1.5rem 0; }
+  .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+  .comparison-grid > div { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; }
+  .comparison-grid > div h4 { margin: 0 0 .5rem 0; font-size: .95rem; }
+  @media (max-width: 600px) { .comparison-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Lesson 3: AWQ</h1>
+<p class="subtitle">不补偿，而是保护——激活值感知量化</p>
+
+<p>你已经学了两条路：</p>
+<ul>
+  <li><strong>朴素量化</strong>：所有权重一视同仁，独立舍入</li>
+  <li><strong>GPTQ</strong>：量化后补偿，用 Hessian 矩阵告诉你怎么补</li>
+</ul>
+
+<p>AWQ 走的是<strong>第三条路</strong>。它来自 MIT HAN Lab（Song Han 组），发表在 MLSys 2024 并获得最佳论文。它的 insight 非常直观：</p>
+
+<blockquote style="font-family: var(--sans); font-size: 1.1rem; color: #6d28d9; border-left: 3px solid #7c3aed; padding-left: 1rem; margin: 1.5rem 0;">
+<strong>只有 ~1% 的权重通道是「重要的」——那些和大的激活值相连的通道。</strong><br>
+保护这 1%，剩下的可以放心大胆地量化。
+</blockquote>
+
+<h2>一个类比：摄影师的取舍</h2>
+
+<p>想象你有一张 4K 照片，但手机存储空间不够了，需要压缩到 1MB。你怎么办？</p>
+
+<ul>
+  <li><strong>朴素量化</strong>：整张照片统一降低质量——人脸和背景一样糊</li>
+  <li><strong>GPTQ</strong>：先压缩一部分，然后调整周围的像素来「弥补」</li>
+  <li><strong>AWQ</strong>：识别出照片中的人脸（重要区域），保留人脸细节，背景狠狠压缩</li>
+</ul>
+
+<div class="callout info">
+<strong>📌 AWQ 的核心 insight：</strong>LLM 的权重矩阵中有少量「salient channels」——它们的激活值特别大，量化误差会被放大。如果只保护这些通道，其余通道可以大胆量化，整体效果损失极小。
+</div>
+
+<h2>OUTLIER 现象——为什么 LLM 这么特殊</h2>
+
+<p>2022 年，Dettmers 等人发现了一个令人惊讶的现象：<strong>LLM 的激活值中存在巨大的 outlier 特征</strong>。</p>
+
+<p>在一层 attention 中，某些 hidden dimension 的激活值可以达到其他维度的 <strong>10~100 倍</strong>。8-bit 量化下，这些 outlier 会导致巨大的误差。</p>
+
+<p style="text-align: center;">
+<pre style="background: #f8fafc; color: #1e293b; border: 1px solid #e2e8f0; font-size: .8rem; display: inline-block; text-align: left; padding: 1rem;">
+Hidden dimension:   1   2   3   4   5   6   7  ...
+激活值 (normalized): 0.1 0.3 0.2 <b>12.8</b> 0.1 0.4 <b>9.5</b> ...
+                             ↑                 ↑
+                          outlier!          outlier!
+</pre>
+</p>
+
+<p>这些 outlier 不是随机的——它们<strong>在同一个 hidden dimension 上持续出现</strong>，也就是说，某些通道就是「天生重要」。</p>
+
+<h2>AWQ 的核心算法</h2>
+
+<p>AWQ 的算法出奇地简单，分为三步：</p>
+
+<h3>Step 1: 识别重要通道</h3>
+<p>用少量校准数据（~128 条）跑一遍模型，记录每个线性层的输入激活值 X。对每个输出通道 <em>i</em>，计算其激活值的平均大小：</p>
+
+<p style="text-align: center; font-size: 1.1rem; font-family: 'Times New Roman', serif;">
+  s<sub>i</sub> = mean(|X<sub>i</sub>|)
+</p>
+
+<p>s<sub>i</sub> 越大，第 <em>i</em> 个通道越重要。</p>
+
+<h3>Step 2: 缩放后再量化</h3>
+<p>对重要通道的权重，在做 scale 之前先乘一个缩放因子 <strong>α</strong>（经验值 α ≈ 0.5~1.0）：</p>
+
+<p style="text-align: center; font-size: 1.1rem; font-family: 'Times New Roman', serif;">
+  如果 s<sub>i</sub> 是 top 1%，则 W<sub>i</sub> ← W<sub>i</sub> / α<br>
+  然后正常做量化：q = round(W<sub>i</sub> / scale_i)
+</p>
+
+<p>「除以 α」让重要权重的数值变小，在固定 bit 范围内获得更精细的表示。</p>
+
+<h3>Step 3: 将缩放吸收到上一层</h3>
+<p>这一步是 AWQ 的妙笔——推理时不能多一次乘 α 操作。AWQ 把 α 吸收到<strong>上一层</strong>的权重中：</p>
+
+<p style="text-align: center; font-size: 1rem; font-family: 'Times New Roman', serif;">
+  设当前层权重 W，上一层权重 W<sub>prev</sub>，输入 X<br>
+  量化：Y = Q(W) · (α · X) = [Q(W) · α] · X <span style="color: #64748b;">（把 α 吸收到量化后的权重里）</span><br>
+  等价于：Y = W<sub>prev</sub> 中对应的列 × α，然后正常做量化
+</p>
+
+<div class="callout tip">
+<strong>💡 为什么这很聪明？</strong>因为 α 被吸收后，推理时<strong>没有任何额外计算</strong>。权重已经量化好了，而这个「保护重要通道」的操作被免费地编码进了量化权重里。相比 GPTQ 的逐列补偿循环，AWQ 只需要一次校准前向传播——快~4 倍。
+</div>
+
+<h2>AWQ 与 GPTQ 的哲学对比</h2>
+
+<div class="comparison-grid">
+  <div>
+    <h4 style="color: #2563eb;">GPTQ</h4>
+    <p style="font-size: .9rem;">「我量化了一个权重，造成了误差。让我调整<strong>其他</strong>权重来弥补。」</p>
+    <p style="font-size: .85rem; color: #64748b;">📊 需要 Hessian 矩阵<br>⚙️ 逐列循环 + 补偿<br>⏱️ 量化慢（算 H 耗时）</p>
+  </div>
+  <div>
+    <h4 style="color: #7c3aed;">AWQ</h4>
+    <p style="font-size: .9rem;">「这个通道的权重很重要（因为激活值大）。让我在量化前<strong>保护</strong>它。」</p>
+    <p style="font-size: .85rem; color: #64748b;">📊 只需要激活值统计<br>⚙️ 一次前向传播就够<br>⏱️ 量化快 ~4×</p>
+  </div>
+</div>
+
+<h2>为什么 AWQ 效果更好？</h2>
+
+<p>在 4-bit 量化下，AWQ 通常比 GPTQ 的 PPL 低 0.1~0.2（越小越好）。原因在于：</p>
+
+<ol>
+  <li><strong>激活值意识：</strong>GPTQ 只看权重本身和 Hessian（基于输入数据的统计），而 AWQ 直接看<strong>激活值大小</strong>——这才是真正决定输出影响力的因素</li>
+  <li><strong>没有过拟合风险：</strong> GPTQ 的 Hessian 拟合可能过度适应校准数据；AWQ 只统计激活值幅度，更鲁棒</li>
+  <li><strong>Uniform 存储格式：</strong>所有权重仍然是 INT4，没有混合精度，硬件友好</li>
+</ol>
+
+<h2>动手环节：模拟 AWQ 的 Per-Channel Scaling</h2>
+
+<div class="exercise">
+<h3>📝 练习：手动实现 AWQ 风格的保护性缩放</h3>
+
+<p>模拟一个场景：一个权重矩阵中少数通道有大的激活值，对比「直接量化」和「先缩放保护再量化」的效果。</p>
+
+<pre><code>import torch
+import math
+
+def awq_protect_quantize(weight, activation_scale, alpha=0.5, bits=4):
+    """
+    模拟 AWQ 的 per-channel scaling 保护性量化
+    
+    weight: (d_out, d_in) 权重矩阵
+    activation_scale: (d_out,) 每个输出通道的激活值大小
+    alpha: 缩放系数（论文建议 0.5~1.0）
+    """
+    q_max = 2**(bits - 1) - 1
+    
+    # Step 1: 找出重要的通道（top 1%）
+    threshold = torch.quantile(activation_scale, 0.99)
+    important = activation_scale >= threshold
+    print(f"重要通道: {important.sum().item()} / {important.numel()} ({important.sum().item()/important.numel()*100:.1f}%)")
+    
+    # Step 2: 对重要通道做保护性缩放
+    weight_scaled = weight.clone()
+    weight_scaled[:, important] = weight[:, important] / alpha
+    
+    # Step 3: 量化（per-channel scale）
+    result = torch.zeros_like(weight)
+    for i in range(weight.shape[1]):  # 每个输出通道独立量化
+        w = weight_scaled[:, i] if important[i] else weight[:, i]
+        scale = w.abs().max() / q_max
+        q = torch.round(w / scale).clamp(-q_max, q_max)
+        result[:, i] = q * scale
+    
+    return result
+
+def naive_channel_quantize(weight, bits=4):
+    """朴素 per-channel 量化（没有保护性缩放）"""
+    q_max = 2**(bits - 1) - 1
+    result = torch.zeros_like(weight)
+    for i in range(weight.shape[1]):
+        w = weight[:, i]
+        scale = w.abs().max() / q_max
+        q = torch.round(w / scale).clamp(-q_max, q_max)
+        result[:, i] = q * scale
+    return result
+
+# 构造模拟数据
+torch.manual_seed(42)
+d_out, d_in = 64, 128
+weight = torch.randn(d_out, d_in) * 0.1
+
+# 模拟激活值：大部分小，1% 的几个通道特别大
+activation_scale = torch.ones(d_in) * 0.1
+activation_scale[torch.randperm(d_in)[:2]] = 10.0  # 2 个 outlier 通道
+
+print("=" * 50)
+print("测试 AWQ 风格保护量化 vs 朴素 channel-wise 量化")
+print("=" * 50)
+
+naive_q = naive_channel_quantize(weight)
+awq_q = awq_protect_quantize(weight, activation_scale, alpha=0.5)
+
+naive_mse = ((weight - naive_q) ** 2).mean().item()
+awq_mse = ((weight - awq_q) ** 2).mean().item()
+
+print(f"\n朴素 per-channel 量化 MSE: {naive_mse:.6f}")
+print(f"AWQ 风格保护量化 MSE:     {awq_mse:.6f}")
+print(f"改进:                     {(naive_mse - awq_mse) / naive_mse * 100:.1f}%")
+
+# 只看重要通道
+print(f"\n对 2 个重要通道单独看:")
+for idx in torch.where(activation_scale >= activation_scale.quantile(0.99))[0]:
+    col = weight[:, idx]
+    naive_err = (col - naive_q[:, idx]).abs().mean().item()
+    awq_err = (col - awq_q[:, idx]).abs().mean().item()
+    print(f"  通道 {idx.item():3d}: 朴素误差={naive_err:.4f}, AWQ误差={awq_err:.4f}, 改进={(naive_err-awq_err)/naive_err*100:.1f}%")
+</code></pre>
+
+<div class="callout tip">
+<strong>试试这些扩展：</strong><br>
+• 把 alpha 从 0.5 改成 0.1、0.3、0.9——观察效果变化。alpha 太小会怎样？<br>
+• 把 outlier 通道从 2 个增加到 10 个——保护 1% 的假设还成立吗？<br>
+• 如果不做 Step 3（把 α 吸收到上一层），推理时的额外开销是什么？
+</div>
+</div>
+
+<h2>AWQ 的实际用法</h2>
+
+<pre><code># pip install autoawq transformers
+
+from awq import AutoAWQForCausalLM
+from transformers import AutoTokenizer
+
+model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+
+model = AutoAWQForCausalLM.from_pretrained(model_id)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+# 配一个简单的校准数据集
+calibration_data = [
+    "The meaning of life is",
+    "Machine learning is a subset of",
+    "In the beginning, there was",
+]
+
+# 量化——一行搞定
+model.quantize(
+    tokenizer,
+    quant_config={"bits": 4, "group_size": 128, "zero_point": True},
+    calib_data=calibration_data
+)
+
+# 保存
+model.save_quantized("llama3-8b-awq")
+tokenizer.save_pretrained("llama3-8b-awq")
+</code></pre>
+
+<h2>什么时候用 AWQ？</h2>
+
+<table>
+  <tr><th>场景</th><th>推荐</th><th>原因</th></tr>
+  <tr><td>GPU 推理服务 (vLLM)</td><td><strong>✅ AWQ</strong></td><td>vLLM 原生支持 AWQ，速度快，精度高</td></tr>
+  <tr><td>你不想等量化过程</td><td><strong>✅ AWQ</strong></td><td>比 GPTQ 快 ~4×</td></tr>
+  <tr><td>需要在 CPU 上运行</td><td>❌ AWQ (GGUF)</td><td>AWQ 是 GPU only</td></tr>
+  <tr><td>要做 QLoRA 微调</td><td>❌ AWQ (bitsandbytes)</td><td>微调用 bitsandbytes NF4</td></tr>
+  <tr><td>模型特别敏感（数学/代码）</td><td><strong>✅ AWQ</strong></td><td>4-bit AWQ 通常比 GPTQ 损失更小</td></tr>
+</table>
+
+<h2>与课程地图的关联</h2>
+
+<table>
+  <tr><th>课程</th><th>内容</th><th>关系</th></tr>
+  <tr><td><a href="0001-forget-fp16.html">Lesson 1</a></td><td>朴素量化</td><td>← AWQ 的 baseline</td></tr>
+  <tr><td><a href="0002-gptq-compensation.html">Lesson 2</a></td><td>GPTQ — 误差补偿</td><td>← AWQ 走的是不同路线：保护而非补偿</td></tr>
+  <tr><td><strong>Lesson 3 (本课)</strong></td><td><strong>AWQ — 激活值感知</strong></td><td>← 你现在在这里</td></tr>
+  <tr><td>Lesson 4</td><td>GGUF & K-Quants</td><td>→ 本地部署的王者格式</td></tr>
+  <tr><td>Lesson 5</td><td>实战：真正量化一个模型</td><td>→ 动手用 bitsandbytes / llama.cpp</td></tr>
+</table>
+
+<h2>推荐阅读</h2>
+
+<ul>
+  <li><a href="https://arxiv.org/abs/2306.00978" target="_blank">[原始论文] AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration</a> — Lin et al., MLSys 2024 Best Paper</li>
+  <li><a href="https://huggingface.co/docs/transformers/main/quantization/awq" target="_blank">HuggingFace AWQ Guide</a></li>
+  <li><a href="https://github.com/casper-hansen/AutoAWQ" target="_blank">AutoAWQ GitHub</a> — AWQ 量化库</li>
+  <li><a href="../reference/glossary.html">量化词汇表</a></li>
+</ul>
+
+<h2>下一步</h2>
+
+<p>做完练习后，你可以问我：</p>
+<ul>
+  <li>"AWQ 的 alpha 系数怎么选最优？论文里怎么说的？"</li>
+  <li>"为什么 AWQ 能比 GPTQ 快那么多？除了不用算 Hessian 还有别的原因吗？"</li>
+  <li>"AWQ 能用在 8-bit 吗？还是只能 4-bit？"</li>
+  <li>"如果模型没有 outlier（理论上），AWQ 和朴素量化效果一样吗？"</li>
+  <li>"下节课是 GGUF，那是做什么的？"</li>
+</ul>
+
+<div class="footnote">
+  <p><strong>引用：</strong>Lin et al., "AWQ: Activation-aware Weight Quantization" (MLSys 2024) | Dettmers et al., "LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale" (2022)</p>
+  <p><strong>本课对应的学习记录：</strong>LR-0003: AWQ 核心思想已建立</p>
+</div>
+
+</body>
+</html>

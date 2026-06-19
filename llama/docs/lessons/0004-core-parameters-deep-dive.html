@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0004 — 核心参数原理详解</title>
+<style>
+:root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333;--warn:#b3261e}body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65}main{max-width:930px;margin:0 auto;padding:48px 24px 80px}h1{font-size:2.25rem;line-height:1.15;margin:.2rem 0 .5rem}h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line)}h3{margin-top:1.4rem}.subtitle,.small{color:var(--muted)}.mission,.note{background:var(--panel);border-left:4px solid var(--accent);padding:1rem 1.2rem;margin:1.3rem 0}code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;border:1px solid #e5dccd;border-radius:4px;padding:.08rem .28rem}pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}pre code{background:transparent;border:0;color:inherit;padding:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem}.card{border:1px solid var(--line);border-radius:10px;padding:1rem;background:#fffaf0}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}button{font:inherit;padding:.45rem .75rem;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin:.25rem .3rem .25rem 0}.answer{margin:.5rem 0 1rem;font-weight:700}.good{color:var(--good)}.warn{color:var(--warn)}a{color:#2457a6}
+</style>
+</head>
+<body>
+<main>
+<p class="small">Lesson 0004 · <a href="0003-gguf-quantization-selection.html">上一课</a> · <a href="../reference/llama-cpp-parameters-deep-dive.html">参数速查</a> · <a href="../reference/llama-cpp-glossary.html">术语表</a></p>
+<h1>核心参数原理详解</h1>
+<p class="subtitle">今天的胜利条件：你能解释每个常用参数“控制推理流程的哪个环节”，而不是只背默认值。</p>
+
+<section class="mission">
+<b>与你的任务的关系：</b>你的 Agent 会调用本地模型。理解参数后，你能根据 Agent 的 prompt 长度、并发量、输出风格需求，有针对性地调整 server 配置，而不是复制粘贴命令。
+</section>
+
+<h2>1. 把参数放回推理流程</h2>
+<p>第一课我们画过这个流程。现在把参数标上去：</p>
+<pre><code>GGUF 模型文件
+  │
+  ▼
+加载权重到内存/显存  ←── 由 -m 指定文件，-ngl 决定放 GPU 的层数
+  │
+  ▼
+Prompt prefill       ←── -b (逻辑 batch) 和 -ub (物理 batch) 控制处理效率
+  │     │
+  │     └── 建立 KV cache  ←── -c (ctx-size) 决定 KV cache 最大容量
+  │
+  ▼
+Token decode loop    ←── 每步生成一个 token
+  │     │
+  │     └── logits → 采样参数链 → 选中 token
+  │           temp, top-p, top-k, min-p, penalties...
+  │
+  ▼
+输出到 API 响应</code></pre>
+<p>下面按环节逐个拆参数。</p>
+
+<h2>2. 模型加载：-m 与 -ngl</h2>
+<h3>-m, --model</h3>
+<p>指定 GGUF 文件路径。建议是<b>绝对路径</b>，避免工作目录变化导致找不到模型。官方 server README 和 cli README 都把它列为首要参数。</p>
+
+<h3>-ngl, --n-gpu-layers</h3>
+<p>官方 multi-gpu 文档说明：这是 "Maximum number of layers to keep in VRAM"，支持 <code>auto</code>、<code>all</code> 或具体数字。默认值在新版本是 <code>auto</code>。</p>
+<div class="grid">
+<div class="card"><b>设 all / 999</b><br>让 llama.cpp 尽量把层放进 GPU。显存够时是正确选择。</div>
+<div class="card"><b>设具体数字</b><br>例如 <code>-ngl 20</code>。当你知道总层数且想精确控制显存时。</div>
+<div class="card"><b>设 auto</b><br>让 llama.cpp 自己估算。通常合理，但若你的显存很紧，建议手动验证。</div>
+<div class="card"><b>降低 -ngl</b><br>OOM 时的急救方案。部分层回 CPU，速度下降但通常能跑。</div>
+</div>
+<p class="note"><b>原理：</b>模型通常由几十层 Transformer block 组成。-ngl 控制多少层放在 GPU VRAM。如果设 0，所有计算在 CPU 上。如果设总层数，尽量全放 GPU。中间值是混合模式：前 n 层在 GPU，后面在 CPU。</p>
+
+<h2>3. 上下文与 KV cache：-c</h2>
+<h3>-c, --ctx-size</h3>
+<p>官方 server README 定义："size of the prompt context"，默认 <code>0</code>（0 = 从模型元数据加载）。</p>
+<p>这个参数是第一课心智模型的核心：<b>它直接决定 KV cache 的最大容量</b>。KV cache 不是模型文件的一部分，是运行时分配的内存/显存。</p>
+
+<div class="note"><b>KV cache 大小的粗略直觉（非精确公式）：</b><br>
+KV cache 大小 ∝ 层数 × 头数 × 每头维度 × 上下文长度 × 并发数 × 精度字节数<br>
+官方 Discussion #10068 提到没有简单的现成公式，但 server 启动时会打印 allocated GPU mem for context 的摘要。你可以从日志中观察。
+</div>
+
+<p><b>针对 5060 Ti 16GB 的实践建议：</b></p>
+<ul>
+<li>7B/8B Q5_K_M + -c 4096：KV cache 约 1–2 GB，总占用约 7–9 GB，非常舒适。</li>
+<li>7B/8B Q5_K_M + -c 8192：KV cache 翻倍到约 2–4 GB，总占用约 8–11 GB，仍有余量。</li>
+<li>7B/8B Q5_K_M + -c 32768：KV cache 约 8–12 GB，加上权重可能接近或超过 16GB，需要 careful。</li>
+</ul>
+<p>因此 <code>-c</code> 不是“越大越好”，而是“你的显存预算允许多大”。</p>
+
+<h2>4. Batch：-b 与 -ub</h2>
+<p>这是最容易混淆的一对参数。官方 README 的定义：</p>
+<table>
+<thead><tr><th>参数</th><th>全称</th><th>默认值</th><th>控制什么</th></tr></thead>
+<tbody>
+<tr><td><code>-b</code></td><td>--batch-size</td><td>2048</td><td>逻辑最大 batch size；影响 prompt prefill 的吞吐量。</td></tr>
+<tr><td><code>-ub</code></td><td>--ubatch-size</td><td>512</td><td>物理最大 batch size；控制内存/显存峰值。</td></tr>
+</tbody>
+</table>
+
+<h3>逻辑 batch (-b) 是什么？</h3>
+<p>假设你发送了一个 3000 token 的 prompt。llama.cpp 可以一次性处理这些 token（如果 -b ≥ 3000），而不是逐个处理。更大的 -b 意味着更长的 prompt 可以一次性 prefill，prefill 速度更快。</p>
+
+<h3>物理 batch (-ub) 是什么？</h3>
+<p>显存可能不允许一次性处理 3000 token。物理 batch 是实际一次喂给硬件计算的 token 数。如果逻辑 batch 3000 超过物理 batch 512，llama.cpp 会分多次计算（比如分 6 次，每次 512），但在逻辑上仍视为一次 prefill。</p>
+
+<div class="card"><b>一句话区分</b><br>
+<code>-b</code> 决定"我最多想一次处理多少 token"；<code>-ub</code> 决定"硬件一次最多能吃下多少 token"。通常 <code>-ub ≤ -b</code>。</div>
+
+<p><b>什么时候调它们？</b></p>
+<ul>
+<li>长 prompt prefill 慢：尝试增大 -b（但要确保 -ub 也足够，或显存能承受）。</li>
+<li>Prefill 阶段 OOM：降低 -ub，让计算切得更细。</li>
+<li>通常默认值对 7B/8B 模型足够；遇到性能瓶颈再调。</li>
+</ul>
+
+<h2>5. 并发：-np</h2>
+<h3>-np, --parallel</h3>
+<p>官方定义："number of parallel sequences"。这是 server 独有的参数，决定同时能处理多少个独立请求。</p>
+<p><b>关键认知：</b>每个 slot 有自己的 KV cache。所以：</p>
+<pre><code>总 KV cache ≈ 单个 slot 的 KV cache × np</code></pre>
+<p>如果你把 -c 设 8192，-np 设 4，那 KV cache 最大可能用到 4 倍于单 slot 的量。这是 server OOM 的常见原因。</p>
+
+<p><b>5060 Ti 16GB 的实践建议：</b></p>
+<ul>
+<li>先单并发 (-np 1) 跑通所有功能。</li>
+<li>Agent 需要并发时，逐步增加 -np，同时用 <code>nvidia-smi</code> 观察显存。</li>
+<li>如果显存吃紧，优先降 -c（上下文）或 -np（并发），而不是降量化。</li>
+</ul>
+
+<h2>6. 采样参数链：从 logits 到 token</h2>
+<p>模型每步输出的是 logits（每个候选 token 的原始分数）。采样参数链决定"怎么从 logits 变成实际选中的 token"。官方 server README 列出默认采样链：</p>
+<pre><code>penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature</code></pre>
+<p>它们按顺序执行，像流水线：</p>
+
+<div class="grid">
+<div class="card"><b>1. penalties</b><br>
+presence_penalty / frequency_penalty 对已出现 token 降权，抑制重复。</div>
+<div class="card"><b>2. top_k</b><br>
+只保留概率最高的 k 个候选。硬截断，防止采到明显离谱的 token。</div>
+<div class="card"><b>3. top_p (nucleus)</b><br>
+从累计概率达到 p 的候选子集中采样。例如 top_p=0.9 表示只在前 90% 概率质量内选。</div>
+<div class="card"><b>4. min_p</b><br>
+过滤掉概率 &lt; 最高概率 × min_p 的候选。相对截断。</div>
+<div class="card"><b>5. temperature</b><br>
+对 logits 做温度缩放：logits /= temp。temp→0 时最确定，temp 高时分布更平坦随机。</div>
+</div>
+
+<h3>--temp</h3>
+<p>默认值约 0.8。这是最常见的调参目标：</p>
+<ul>
+<li><b>低 temp (0.1–0.3)</b>：输出更确定、更保守。适合代码、数学、事实问答。</li>
+<li><b>中 temp (0.5–0.8)</b>：平衡。日常对话默认值。</li>
+<li><b>高 temp (1.0+)</b>：更随机、更有创意。适合头脑风暴、写作。</li>
+</ul>
+<p class="note"><b>注意：</b>temperature 不改变模型的知识，只改变采样风格。如果你问一个模型不知道的事，低 temp 不会让它突然知道，只会让它更自信地胡说。</p>
+
+<h3>--top-p</h3>
+<p>默认值约 0.9。 nucleus sampling 的核心思想：不要从全部词汇表里采样，只从"核心候选集"里选。</p>
+<ul>
+<li><code>--top-p 1.0</code>：不截断，从全部候选采样（配合高 temp 用）。</li>
+<li><code>--top-p 0.1</code>：非常严格的截断，只从最顶尖的候选里选，输出更确定。</li>
+</ul>
+
+<h3>--top-k</h3>
+<p>默认值约 40。硬截断：无论概率分布如何，只保留前 k 个候选。防止模型在奇怪的位置采到生僻 token。</p>
+
+<h3>--presence-penalty / --frequency-penalty</h3>
+<p>两者都用于抑制重复，但机制不同：</p>
+<ul>
+<li><b>presence_penalty</b>：token 只要出现过一次，就被惩罚。值越大，越倾向于引入新词。</li>
+<li><b>frequency_penalty</b>：token 出现次数越多，惩罚越大。更激进地打击重复。</li>
+</ul>
+<p>建议从 0 开始调，遇到明显重复再逐步增加（比如 0.1–0.5）。过高会破坏输出连贯性。</p>
+
+<h2>7. 完整启动示例（带注释）</h2>
+<pre><code>llama-server ^
+  -m C:\models\model.Q5_K_M.gguf ^    :: 模型文件
+  --host 127.0.0.1 ^                  :: 只监听本机
+  --port 8080 ^                       :: HTTP 端口
+  -ngl all ^                          :: 尽量全放 GPU
+  -c 8192 ^                           :: 上下文 8K
+  -b 2048 ^                           :: 逻辑 batch 默认
+  -ub 512 ^                           :: 物理 batch 默认
+  -np 1 ^                             :: 单并发（先跑通）
+  --temp 0.7 ^                        :: 温度
+  --top-p 0.9 ^                       :: nucleus sampling
+  --top-k 40                          :: top-k 截断</code></pre>
+
+<h2>8. 小练习：参数诊断</h2>
+<div class="card"><p><b>Q1.</b> 你发现 prefill（处理 prompt）阶段很慢，但 decode（生成 token）速度正常。优先调哪个参数？</p><button onclick="show('a1')">查看答案</button><div id="a1" class="answer"></div></div>
+<div class="card"><p><b>Q2.</b> 你加了 -np 4 后 server 启动就 OOM。在不动量化的情况下，最快的两个调整方向是什么？</p><button onclick="show('a2')">查看答案</button><div id="a2" class="answer"></div></div>
+<div class="card"><p><b>Q3.</b> --temp 调低会让模型"知道更多"吗？为什么？</p><button onclick="show('a3')">查看答案</button><div id="a3" class="answer"></div></div>
+<div class="card"><p><b>Q4.</b> -b 和 -ub 的默认比例是 2048:512。为什么不能把 -ub 也设成 2048？</p><button onclick="show('a4')">查看答案</button><div id="a4" class="answer"></div></div>
+
+<h2>下一课</h2>
+<p>建议下一课：<b>显存预算与性能调优：5060 Ti 16GB 上的实战计算与监控</b>。把本课的参数和前两课的量化/模型选择结合起来，实际算一遍显存占用，学会用 nvidia-smi 和 server 日志做诊断。</p>
+
+<h2>推荐主源</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">官方 server README</a>：所有 server 参数的权威定义。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/cli/README.md">官方 cli README</a>：cli 参数定义。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/discussions/10068">Discussion #10068</a>：KV cache 内存计算讨论。</li>
+</ul>
+<p class="small">遇到参数相关的问题，告诉我你的场景（模型大小、上下文长度、并发数、遇到的现象），我可以帮你定位该调哪个参数。</p>
+</main>
+<script>
+function show(id){const m={a1:'优先调 -b (batch-size) 和 -ub (ubatch-size)。Prefill 慢通常是因为 prompt 处理没有充分利用并行；增大 batch 可以让更多 token 同时处理。',a2:'1) 降低 -c（上下文长度），减少单个 slot 的 KV cache。2) 降低 -np（并发数），减少总 KV cache。两者都能快速释放显存。',a3:'不会。temp 只改变采样的随机性，不改变模型的知识或推理能力。低 temp 只是让模型更"确定"地从已有候选中选，不会让它知道原本不知道的事。',a4:'-ub 是物理 batch，直接受显存峰值限制。设太大可能导致 prefill 阶段 OOM。-b 是逻辑 batch，可以大于 -ub，llama.cpp 会自动切分。'};document.getElementById(id).innerHTML='<span class="good">答案：</span>'+m[id];}
+</script>
+</body>
+</html>

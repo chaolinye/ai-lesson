@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM 量化词汇表 · Reference</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:opsz@14..32&family=Source+Serif+4:opsz@8..60&display=swap');
+  body { font-family: 'Inter', -apple-system, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 2rem; border-bottom: 2px solid #e2e8f0; padding-bottom: .5rem; }
+  h2 { font-size: 1.3rem; margin-top: 2rem; color: #2563eb; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: .5rem 1.5rem; }
+  dt { font-weight: 600; color: #1e293b; white-space: nowrap; }
+  dd { margin: 0; color: #475569; }
+  dd + dt { margin-top: 1rem; }
+  .meta { color: #64748b; font-size: .9rem; margin-top: 2rem; border-top: 1px solid #e2e8f0; padding-top: 1rem; }
+  code { background: #f1f5f9; padding: .15rem .4rem; border-radius: 4px; font-size: .88em; }
+  @media print { body { font-size: 11pt; } h2 { color: #000; } }
+</style>
+</head>
+<body>
+<h1>LLM 量化词汇表</h1>
+<p style="color:#475569;">你在课程中会遇到的核心术语，按逻辑分组。每个术语都给出直觉和精确定义。</p>
+
+<h2>基础概念</h2>
+<dl>
+  <dt>量化 (Quantization)</dt>
+  <dd>将高精度数值（如 FP32 的 32 位浮点数）映射到更低精度的表示（如 INT4 的 4 位整数），以减少模型的内存占用和计算开销。</dd>
+
+  <dt>权重 (Weights)</dt>
+  <dd>神经网络中可学习的参数。LLM 的权重主要是线性层（Linear）矩阵。量化主要针对权重。</dd>
+
+  <dt>激活值 (Activations)</dt>
+  <dd>前向传播过程中每层的输出值。在推理时由输入计算得到，在 W4A16 方案中保持 FP16 精度。</dd>
+
+  <dt>FP16 / BF16</dt>
+  <dd>16 位浮点数格式。FP16 = 1 符号位 + 5 指数位 + 10 尾数位；BF16 = 1 + 8 + 7。BF16 有更大的动态范围，是 LLM 训练/推理的默认格式。</dd>
+
+  <dt>INT4 / INT8</dt>
+  <dd>4 位 / 8 位整数。量化后的权重就存储为这种格式。INT4 范围是 0~15（无符号）或 -8~7（有符号）。</dd>
+
+  <dt>bits-per-weight (bpw)</dt>
+  <dd>每个权重平均占用的比特数。FP16 = 16 bpw，INT4 = 4 bpw。GGUF 的 Q4_K_M 大约 4.5 bpw（因为元数据开销）。</dd>
+</dl>
+
+<h2>量化操作</h2>
+<dl>
+  <dt>Scale (缩放因子)</dt>
+  <dd>将浮点数映射到整数范围所用的缩放系数。公式：<code>q = round(x / scale) + zero_point</code></dd>
+
+  <dt>Zero-Point (零点)</dt>
+  <dd>浮点数 0.0 映射到整数范围时对应的整数值。对称量化中为 0，非对称量化中可能非零。</dd>
+
+  <dt>对称量化 (Symmetric Quantization)</dt>
+  <dd>zero_point = 0，只用一个 scale 映射正负值。公式：<code>q = round(x / scale)</code>。实现简单，INT4 中常用。</dd>
+
+  <dt>非对称量化 (Asymmetric Quantization)</dt>
+  <dd>zero_point ≠ 0，可以更好地利用整数表示的动态范围。公式：<code>q = round(x / scale) + zp</code>。</dd>
+
+  <dt>逐张量量化 (Per-Tensor Quantization)</dt>
+  <dd>整个权重矩阵共享一个 scale 和 zero_point。计算快，但精度损失大。</dd>
+
+  <dt>逐通道量化 (Per-Channel Quantization)</dt>
+  <dd>权重矩阵的每个输出通道有自己的 scale/zero_point。精度更好，GPTQ/AWQ 都使用这种方案。</dd>
+
+  <dt>逐组量化 / Group Size</dt>
+  <dd>将权重分成固定大小的组（如 group_size=128），每组独立计算 scale/zero_point。更细粒度 = 更好精度 = 更多存储开销。</dd>
+</dl>
+
+<h2>主流算法与格式</h2>
+<dl>
+  <dt>GPTQ</dt>
+  <dd>Generative Pre-trained Transformer Quantization。基于 Hessian 矩阵的逐层误差补偿算法。用校准数据集计算，逐列量化并调整剩余权重。</dd>
+
+  <dt>AWQ</dt>
+  <dd>Activation-aware Weight Quantization。通过观察激活值的大小区分"重要通道"，对重要通道做 scaling 保护。MLSys 2024 最佳论文。</dd>
+
+  <dt>GGUF</dt>
+  <dd>GPT-Generated Unified Format。llama.cpp 使用的文件格式（不是量化算法），将权重、元数据、分词器打包在一个文件中。支持 CPU/GPU 混合推理。</dd>
+
+  <dt>K-Quants (Q4_K_M / Q5_K_S 等)</dt>
+  <dd>GGUF 中使用的层级量化方案。两层级（block + sub-block）的混合精度量化，不同层使用不同比特数。</dd>
+
+  <dt>bitsandbytes</dt>
+  <dd>PyTorch 库，加载时即时量化（无需校准数据）。支持 8-bit (LLM.int8()) 和 4-bit (NF4/FP4)，是 QLoRA 的标准方案。</dd>
+
+  <dt>NF4 (NormalFloat4)</dt>
+  <dd>QLoRA 论文提出的 4 位数据类型。假设权重服从正态分布，将分位数映射到整数，比均匀量化更好地保留信息。</dd>
+</dl>
+
+<h2>相关概念</h2>
+<dl>
+  <dt>PTQ (Post-Training Quantization)</dt>
+  <dd>训练后量化。模型训练完成后，对权重做量化。GPTQ、AWQ、bitsandbytes 都属于 PTQ。</dd>
+
+  <dt>QAT (Quantization-Aware Training)</dt>
+  <dd>在训练过程中模拟量化效果，让模型适应低精度表示。精度通常比 PTQ 好，但需要重新训练。</dd>
+
+  <dt>校准数据集 (Calibration Dataset)</dt>
+  <dd>用于 GPTQ/AWQ 计算量化参数的一小批数据（通常 128~512 条）。必须能代表模型的使用场景。</dd>
+
+  <dt>Perplexity (PPL)</dt>
+  <dd>衡量量化后模型质量的常用指标。PPL 增加越小，量化损失越小。4-bit 量化通常增加 0.2~0.5 PPL。</dd>
+
+  <dt>Hessian 矩阵</dt>
+  <dd>二阶导数矩阵，表示损失函数对权重的敏感度。GPTQ 利用 Hessian 矩阵决定每个权重的量化优先级。</dd>
+
+  <dt>Marlin Kernel</dt>
+  <dd>专门为 A100 架构优化的 CUDA 核，用于高效地运行 GPTQ 4-bit 推理。比原始 GPTQ kernel 快数倍。</dd>
+</dl>
+
+<div class="meta">Last updated: 2026-06-19 — <a href="../lessons/0001-forget-fp16.html">← 第一课：为什么需要量化</a></div>
+</body>
+</html>

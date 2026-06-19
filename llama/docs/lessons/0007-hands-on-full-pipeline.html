@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0007 — 实操：完整链路从模型下载到 Agent 调用</title>
+<style>
+:root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333}
+body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65}
+main{max-width:930px;margin:0 auto;padding:48px 24px 80px}
+h1{font-size:2.25rem;line-height:1.15;margin:.2rem 0 .5rem}
+h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line)}
+h3{margin-top:1.4rem}
+.subtitle,.small{color:var(--muted)}
+.mission,.note{background:var(--panel);border-left:4px solid var(--accent);padding:1rem 1.2rem;margin:1.3rem 0}
+code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;border:1px solid #e5dccd;border-radius:4px;padding:.08rem .28rem}
+pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}
+pre code{background:transparent;border:0;color:inherit;padding:0}
+.card{border:1px solid var(--line);border-radius:10px;padding:1rem;background:#fffaf0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}
+th{background:#f7f1df}
+button{font:inherit;padding:.45rem .75rem;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin:.25rem .3rem .25rem 0}
+.answer{margin:.5rem 0 1rem;font-weight:700}
+.good{color:var(--good)}a{color:#2457a6}
+.step{background:#f0f7ff;border-left:4px solid #3b82f6;padding:1rem;margin:1.2rem 0;border-radius:0 8px 8px 0}
+.step h3{margin:0 0 .5rem 0;padding:0;border:0}
+.out{color:var(--muted);font-style:italic}
+</style>
+</head>
+<body>
+<main>
+<p class="small">Lesson 0007 · <a href="0006-agent-integration.html">上一课</a> · <a href="../reference/llama-cpp-hands-on-cheatsheet.html">实操速查</a> · <a href="../reference/llama-cpp-agent-integration.html">Agent 对接速查</a></p>
+
+<h1>实操：完整链路从模型下载到 Agent 调用</h1>
+<p class="subtitle">今天不做新理论。我们把你已掌握的六课知识变成一次真实操作。</p>
+
+<section class="mission">
+<b>环境确认：</b>你已有 <code>llama-server b9611</code>（CUDA 12.4 build）、RTX 5060 Ti 16GB、Python 3.13。没有 GGUF 模型文件——这正是我们要做的第一步。
+</section>
+
+<h2>操作计划</h2>
+<ol>
+<li>下载一个小型 GGUF 模型（测试用）</li>
+<li>启动 <code>llama-server</code> 并验证 CUDA 工作</li>
+<li>用 curl 测试 chat completion API</li>
+<li>安装 openai Python 包，用 Python 调通</li>
+<li>测试 JSON schema 约束输出</li>
+<li>测试流式输出</li>
+<li>（可选）测试 function calling</li>
+<li>关闭 server，为生产做准备</li>
+</ol>
+
+<h2>Step 1：下载第一个 GGUF 模型</h2>
+
+<p>你的 <code>llama-server</code> 支持 <code>--hf-repo</code>（<code>-hf</code>）直接从 Hugging Face 下载模型。我们先选一个小模型快速验证链路。</p>
+
+<div class="step">
+<h3>选择 A：Qwen2.5-1.5B-Instruct（推荐先试）</h3>
+<p>1.5B 参数，约 1GB，下载快、推理快，适合先跑通全链路。</p>
+<pre><code>mkdir C:\models
+llama-server -hf Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M ^
+  --host 127.0.0.1 --port 8080 ^
+  -ngl all -c 4096</code></pre>
+<p class="out">这会在启动时自动下载模型并开始服务。</p>
+</div>
+
+<div class="step">
+<h3>选择 B：先下载再启动</h3>
+<p>如果你希望模型文件保存在本地，可以从 Hugging Face 手动下载 GGUF 文件，然后指定 <code>-m</code> 启动。例如：</p>
+<ul>
+<li>访问 <a href="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF">Qwen2.5-1.5B-Instruct-GGUF</a></li>
+<li>下载 <code>qwen2.5-1.5b-instruct-q4_k_m.gguf</code></li>
+<li>保存到 <code>C:\models\</code></li>
+<li>用 <code>-m C:\models\qwen2.5-1.5b-instruct-q4_k_m.gguf</code> 启动</li>
+</ul>
+</div>
+
+<p><b>建议：</b>先用选择 A（-hf）快速验证。全链路跑通后，再下载 7B/8B 模型用于实际 Agent。</p>
+
+<h2>Step 2：启动 server 并确认 CUDA</h2>
+
+<p>启动后观察日志。你应该看到类似：</p>
+<pre><code>build info: ... (02182fc5b)
+...
+system info: nvidia gpu detected (cuda)
+...
+llama_model_loader: loaded 291 tensors from qwen2.5-1.5b-instruct-q4_k_m.gguf
+...
+llm_load_tensors: using CUDA for GPU backend
+llm_load_tensors: mem required  =  XXXX MB
+llm_load_tensors: offloading 28 layers to GPU
+llm_load_tensors: offloading output layer to GPU
+llama_server: initializing, slots: n_slots=1, context_size=4096, ...
+llama_server: http server is listening on http://127.0.0.1:8080</code></pre>
+
+<p>在另一个终端运行 <code>nvidia-smi</code> 确认显存占用和 GPU 利用率：</p>
+<pre><code>nvidia-smi -l 2</code></pre>
+
+<h2>Step 3：用 curl 测试 chat completion</h2>
+
+<div class="step">
+<h3>没有设 --api-key 时：</h3>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"用一句话介绍 llama.cpp\"}],\"temperature\":0.7}"</code></pre>
+</div>
+
+<div class="step">
+<h3>设了 --api-key 时：</h3>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"用一句话介绍 llama.cpp\"}]}"</code></pre>
+</div>
+
+<p>成功标志：返回 JSON，包含 <code>choices[0].message.content</code> 和 <code>usage</code> 字段。</p>
+
+<h2>Step 4：安装 openai 包并用 Python 调通</h2>
+
+<div class="step">
+<h3>安装：</h3>
+<pre><code>pip install openai</code></pre>
+</div>
+
+<div class="step">
+<h3>测试脚本：</h3>
+<pre><code>from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8080/v1",
+    api_key="sk-llama-local-key",  # 如果没设 --api-key，随便填
+)
+
+response = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "你好！你是谁？"}],
+    temperature=0.7,
+    max_tokens=200,
+)
+
+print(f"回复: {response.choices[0].message.content}")
+print(f"Token 使用: {response.usage}")</code></pre>
+</div>
+
+<h2>Step 5：测试 JSON schema 约束输出</h2>
+
+<div class="step">
+<h3>Python 代码：</h3>
+<pre><code>from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-llama-local-key")
+
+response = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "列出三种编程语言及其创始年份"}],
+    response_format={
+        "type": "json_object",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "languages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "year": {"type": "integer"}
+                        }
+                    }
+                }
+            }
+        }
+    },
+)
+
+import json
+data = json.loads(response.choices[0].message.content)
+print(json.dumps(data, indent=2, ensure_ascii=False))
+# 输出类似：
+# {
+#   "languages": [
+#     {"name": "Python", "year": 1991},
+#     {"name": "Java", "year": 1995},
+#     {"name": "JavaScript", "year": 1995}
+#   ]
+# }</code></pre>
+</div>
+
+<p><b>验证：</b>JSON schema 保证输出一定是合法 JSON 且符合 schema 结构。如果模型输出非法 JSON，那是 llama.cpp 的 bug——因为它是在 grammar 级别约束的。</p>
+
+<h2>Step 6：测试流式输出</h2>
+
+<div class="step">
+<h3>Python 流式：</h3>
+<pre><code>from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-llama-local-key")
+
+stream = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "写一首关于 AI 的五言绝句"}],
+    stream=True,
+)
+
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)</code></pre>
+</div>
+
+<h2>Step 7（可选）：测试 function calling</h2>
+
+<div class="step">
+<h3>Python 代码：</h3>
+<pre><code>from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-llama-local-key")
+
+response = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "北京的天气怎么样？"}],
+    tools=[{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "获取指定城市的天气",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string"}
+                },
+                "required": ["city"]
+            }
+        }
+    }],
+    tool_choice="auto",
+)
+
+msg = response.choices[0].message
+if msg.tool_calls:
+    for tc in msg.tool_calls:
+        print(f"调用工具: {tc.function.name}")
+        print(f"参数: {tc.function.arguments}")
+else:
+    print(f"回复: {msg.content}")</code></pre>
+</div>
+
+<h2>Step 8：关闭 server</h2>
+<p>在 server 终端按 <kbd>Ctrl+C</kbd>。确认 nvidia-smi 显示显存已释放。</p>
+
+<h2>生产准备建议</h2>
+<ul>
+<li>从 1.5B 测试模型切换到你真正需要的 7B/8B 模型。</li>
+<li>选择 <code>Q5_K_M</code> 或 <code>Q4_K_M</code> 量化。</li>
+<li>设 <code>--api-key</code>（如果暴露到网络）。</li>
+<li>根据 Agent 并发调整 <code>-np</code>。</li>
+<li>建议写一个 PowerShell 脚本保存启动命令，避免每次输一长串。</li>
+</ul>
+
+<h2>课后练习</h2>
+<div class="card"><p><b>练习 1：</b>用 curl 测试流式输出，观察 SSE chunk 的格式。</p></div>
+<div class="card"><p><b>练习 2：</b>对比 f16 和 q8_0 KV cache 下，nvidia-smi 显示的显存差异。</p></div>
+<div class="card"><p><b>练习 3：</b>把你的 Agent 代码中的 <code>base_url</code> 指向本地 server，看是否能直接替换 OpenAI API。</p></div>
+
+<h2>下一步</h2>
+<p>全链路跑通后，后续课程方向可选：</p>
+<ul>
+<li><b>嵌入模型：</b>用 <code>--embedding</code> 模式跑 embedding 模型，支持 RAG。</li>
+<li><b>多 GPU：</b>如果有第二张卡，用 <code>-sm</code> <code>-ts</code> 分配。</li>
+<li><b>speculative decoding：</b>用小 draft 模型加速大模型。</li>
+<li><b>多模态：</b>跑视觉语言模型，支持图片输入。</li>
+</ul>
+
+<p class="small">操作中遇到任何问题，直接把终端输出发给我，我带你诊断。</p>
+</main>
+</body>
+</html>

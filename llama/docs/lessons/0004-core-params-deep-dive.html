@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0004 — 核心参数原理详解</title>
+<style>
+:root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333;--bad:#b3261e}
+body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65}
+main{max-width:930px;margin:0 auto;padding:48px 24px 80px}
+h1{font-size:2.25rem;line-height:1.15;margin:.2rem 0 .5rem}
+h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line)}
+h3{margin-top:1.4rem}
+.subtitle,.small{color:var(--muted)}
+.mission,.note{background:var(--panel);border-left:4px solid var(--accent);padding:1rem 1.2rem;margin:1.3rem 0}
+code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;border:1px solid #e5dccd;border-radius:4px;padding:.08rem .28rem}
+pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}
+pre code{background:transparent;border:0;color:inherit;padding:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem}
+.card{border:1px solid var(--line);border-radius:10px;padding:1rem;background:#fffaf0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}
+th{background:#f7f1df}
+button{font:inherit;padding:.45rem .75rem;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin:.25rem .3rem .25rem 0}
+.answer{margin:.5rem 0 1rem;font-weight:700}
+.good{color:var(--good)}
+a{color:#2457a6}
+.flow{font-family:Consolas,ui-monospace,monospace;background:#fffaf0;border:1px solid var(--line);padding:1rem;border-radius:10px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+<p class="small">Lesson 0004 · <a href="0003-gguf-quantization-selection.html">上一课</a> · <a href="../reference/llama-cpp-core-params.html">核心参数速查</a> · <a href="../reference/llama-cpp-glossary.html">术语表</a></p>
+
+<h1>核心参数原理详解</h1>
+<p class="subtitle">今天把前几课见过的参数全部拆开：它们控制推理过程中的哪一个环节？改它们到底会发生什么？</p>
+
+<section class="mission">
+<b>与你的任务的关系：</b>你已经知道 <code>-ngl</code> 控制 GPU offload，<code>-c</code> 控制上下文大小，<code>--temp</code> 控制随机性。但真正调参时，你需要知道：<code>-b</code> 和 <code>-ub</code> 有什么区别？flash-attn 省什么？<code>-np</code> 开多会怎样？这节课让你从"知道参数名"到"理解参数为什么这样设"。
+</section>
+
+<h2>1. 回顾推理流水线（把参数放回去）</h2>
+<p>第一课的心智模型现在加上参数位置：</p>
+<div class="flow">GGUF 模型加载 —— 相关参数：-m, -hf, --mmap, --mlock
+        │
+  权重放到哪？—— -ngl (GPU offload 层数)
+  计算在哪做？—— -dev (设备选择), -t (CPU 线程)
+        │
+  Prompt prefill —— -b (batch), -ub (ubatch), -tb (threads-batch)
+  并行处理 prompt token，建立 KV cache
+        │
+  Token decode loop —— -t, -fa, -ctk/-ctv
+  逐 token 生成，依赖 KV cache
+        │
+  采样选 token —— --temp, --top-p, --top-k, --min-p, --repeat-penalty, --mirostat
+        │
+  Server/API 层 —— --host, --port, -np (并行 slot), --api-key</div>
+
+<h2>2. 深度拆解：GPU offload 相关</h2>
+
+<h3><code>-ngl, --n-gpu-layers</code></h3>
+<p><b>官方定义：</b>"max. number of layers to store in VRAM, either an exact number, 'auto', or 'all' (default: auto)"</p>
+<ul>
+<li><b>原理：</b>Transformer 模型由多层组成。每层包含 attention + FFN 计算。把层放在 GPU 上，矩阵运算走 CUDA 核心，速度远快于 CPU。</li>
+<li><b>不是 0/1 开关：</b>你可以只 offload 前 20 层，留 12 层在 CPU。这称为 CPU+GPU 混合推理。</li>
+<li><b>"auto" 含义：</b>新版本默认 auto，让 llama.cpp 根据你显存自动决策。</li>
+<li><b>"all" / 大数字：</b>如果设 99 或 all，llama.cpp 会尽量全部 offload；如果显存不够，它会自动减少。</li>
+<li><b>典型场景：</b>5060 Ti 16GB，7B Q5_K_M 约 5.5GB → 全部 offload 通常可行。如果模型更大或上下文更长，降低 -ngl 来节省显存。</li>
+</ul>
+
+<h3><code>-fa, --flash-attn</code></h3>
+<p><b>官方定义：</b>"set Flash Attention use ('on', 'off', or 'auto', default: 'auto')"</p>
+<ul>
+<li><b>省什么：</b>Flash Attention 是一种更高效的注意力计算方式，<b>主要节省显存</b>（KV cache 相关），有时也能提升速度。</li>
+<li><b>什么时候重要：</b>上下文越长，Flash Attention 节省效果越明显。8K+ 上下文场景强烈建议开启。</li>
+<li><b>auto 模式：</b>如果检测到你的 GPU 支持（计算能力 8.0+），auto 会自动启用。</li>
+</ul>
+
+<h2>3. 深度拆解：上下文与 KV cache</h2>
+
+<h3><code>-c, --ctx-size</code></h3>
+<p><b>官方定义：</b>"size of the prompt context (default: 0, 0 = loaded from model)"</p>
+<ul>
+<li><b>原理：</b>上下文大小 = 模型一次会话能"看到"的最大 token 数。包括系统提示、历史对话、当前输入、模型输出。</li>
+<li><b>为什么不是越大越好：</b>KV cache 大小与上下文成正比。上下文翻倍，KV cache 翻倍。</li>
+<li><b>默认值 0：</b>表示使用模型元数据里标注的上下文长度（例如 8192 或 128K）。</li>
+<li><b>你的 5060 Ti：</b>设 4096 或 8192 通常安全。如果模型原生支持 128K 上下文（如一些新模型），直接开到 128K 会让 KV cache 吃掉几乎所有显存。</li>
+</ul>
+
+<h3><code>-ctk, -ctv</code> — KV cache 量化</h3>
+<p><b>官方定义：</b>KV cache data type for K/V (default: f16)，支持 f32, f16, bf16, q8_0, q4_0 等。</p>
+<ul>
+<li><b>原理：</b>KV cache 默认用 f16 存储。如果把 KV cache 量化到 q8_0 或 q4_0，能大幅降低 KV cache 的显存占用，代价是轻微的质量损失。</li>
+<li><b>实用建议：</b>上下文超过 32K 或并发数高时，考虑 <code>-ctk q8_0 -ctv q8_0</code> 甚至 <code>q4_0</code> 来节省显存。</li>
+</ul>
+
+<h2>4. 深度拆解：Batch 与并发</h2>
+
+<h3><code>-b, --batch-size</code> vs <code>-ub, --ubatch-size</code></h3>
+<p>这两个参数初学者最容易混淆。官方定义：</p>
+<ul>
+<li><code>-b</code>：logical maximum batch size (default: 2048)</li>
+<li><code>-ub</code>：physical maximum batch size (default: 512)</li>
+</ul>
+<p><b>为什么有两个 batch？</b></p>
+<p>Prompt processing（prefill）阶段需要并行计算多个 token 的注意力。但显存有限，不能一次把所有 token 全部并行算。所以：</p>
+<ul>
+<li><b>逻辑 batch（-b）：</b>你希望一次处理多少 token。比如 prompt 有 4000 个 token，设 -b 2048，那需要至少 2 个 step 处理完。</li>
+<li><b>物理 batch（-ub）：</b>每一步实际送入 GPU 的 token 数。如果设 -ub 512，那即使 -b 是 2048，每一步也只送 512 个 token 进 GPU 计算。</li>
+</ul>
+<p><b>直觉：</b>-ub 是显存安全阀。如果 OOM，先降 -ub。如果 prompt 处理慢，可以尝试提高 -b（但效果取决于模型和 GPU）。</p>
+
+<h3><code>-np, --parallel</code></h3>
+<p><b>官方定义：</b>"number of server slots (default: -1, -1 = auto)"</p>
+<ul>
+<li><b>原理：</b>每个 slot 对应一个并发请求。如果 -np 4，最多 4 个请求同时处理。</li>
+<li><b>代价：</b>每个 slot 都有独立的 KV cache。如果 -c 8192、-np 4，KV cache 总需求 ≈ 4 × 8K 的 KV cache。你的 16GB 显存需要精打细算。</li>
+<li><b>auto 模式：</b>新版本会根据显存自动计算 slot 数。</li>
+<li><b>continuous batching：</b>当 -cb 启用（默认），llama.cpp 会动态在 batch 中混合多个请求的 token，提高 GPU 利用率。</li>
+</ul>
+
+<h2>5. 深度拆解：采样参数（控制输出风格）</h2>
+<p>官方 server README 把采样参数列在独立章节，因为它们在推理计算之后、返回 token 之前起作用。</p>
+
+<div class="grid">
+<div class="card">
+<h3><code>--temp, --temperature</code></h3>
+<p><b>默认：0.80</b></p>
+<p>对 logits 做 softmax 前，除以 temperature。温度越低（如 0.1），高概率 token 的胜出优势越大；温度越高（如 1.5），各 token 概率更均匀，输出更随机。</p>
+<p><b>Agent 场景：</b>通常 0.6–0.8 之间。需要确定性输出时可降到 0.1–0.3。</p>
+</div>
+<div class="card">
+<h3><code>--top-p</code></h3>
+<p><b>默认：0.95</b></p>
+<p>把所有 token 按概率从高到低排序，从累计概率达到 p 的最小集合中采样。p=0.95 意味着忽略最不靠谱的 5% token。</p>
+<p><b>和 top-k 的区别：</b>top-k 固定选 k 个；top-p 动态选，分布尖锐时选得少，分布平坦时选得多。</p>
+</div>
+<div class="card">
+<h3><code>--top-k</code></h3>
+<p><b>默认：40</b></p>
+<p>只保留概率最高的 k 个 token，把其他的概率置零。k=40 是经典值；k=1 等于 greedy decoding（总是选最可能那个）。</p>
+</div>
+<div class="card">
+<h3><code>--min-p</code></h3>
+<p><b>默认：0.05</b></p>
+<p>忽略概率低于（最高概率 × min-p）的 token。例如最高概率 token 是 0.5，min-p=0.05 则忽略概率低于 0.025 的所有 token。</p>
+<p><b>对比：</b>相比 top-p，min-p 对低质量模型更友好——不会在概率平坦时误砍可用 token。</p>
+</div>
+</div>
+
+<h3>采样顺序很重要</h3>
+<p>官方参数 <code>--samplers</code> 默认值为：<code>penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature</code></p>
+<p>这意味着采样器按此顺序依次处理 logits。例如 <code>--top-p</code> 在 <code>--top-k</code> 之后应用，先截断到 top-k 个 token，再在剩下的里面做 top-p 过滤。</p>
+
+<h2>6. 综合场景：一个 5060 Ti 16GB 的推荐启动命令</h2>
+<pre><code>llama-server ^
+  -m C:\models\my-8b-instruct.Q5_K_M.gguf ^
+  --host 127.0.0.1 --port 8080 ^
+  -ngl all ^
+  -c 8192 ^
+  -fa on ^
+  -b 2048 -ub 512 ^
+  -np 1 ^
+  -t 8 ^
+  --temp 0.7 --top-p 0.9</code></pre>
+<p>解释每项选择：</p>
+<ul>
+<li><code>-ngl all</code>：16GB 显存，8B Q5_K_M ≈ 5.5GB，全部 offload 可行。</li>
+<li><code>-c 8192</code>：8K 上下文，KV cache 约 4GB，仍在余量内。</li>
+<li><code>-fa on</code>：明确开启 Flash Attention，节省 KV cache 显存。</li>
+<li><code>-np 1</code>：单并发。先保证链路稳定；后续再根据 Agent 需求调整。</li>
+<li><code>-t 8</code>：8 个 CPU 线程。即使大部分在 GPU 上，采样等仍需要 CPU。</li>
+<li><code>--temp 0.7 --top-p 0.9</code>：温和随机性，适合 Agent 对话。</li>
+</ul>
+
+<h2>7. 检索练习</h2>
+
+<div class="card"><p><b>Q1.</b> 把 <code>-c</code> 从 4096 翻到 32768，KV cache 会怎样变化？</p><button onclick="show('a1')">查看答案</button><div id="a1" class="answer"></div></div>
+<div class="card"><p><b>Q2.</b> <code>-b</code> 和 <code>-ub</code> 哪个更应该作为"OOM 安全阀"？为什么？</p><button onclick="show('a2')">查看答案</button><div id="a2" class="answer"></div></div>
+<div class="card"><p><b>Q3.</b> 如果 --temp=0.1，此时 --top-p=0.5 还有多大影响？</p><button onclick="show('a3')">查看答案</button><div id="a3" class="answer"></div></div>
+<div class="card"><p><b>Q4.</b> 为什么 -np 从 1 增加到 4 时，即使没人发请求，启动时也会多用显存？</p><button onclick="show('a4')">查看答案</button><div id="a4" class="answer"></div></div>
+
+<h2>下一课</h2>
+<p>建议下一课：<b>Flash Attention、KV cache 量化与显存优化</b>。聚焦如何榨干 16GB 显存的潜力，跑更大的模型或更长的上下文。</p>
+
+<h2>推荐主源</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">官方 server README</a>——所有参数的第一手文档。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md">官方 build.md</a>——CUDA 相关选项。</li>
+</ul>
+<p class="small">对某个参数还有疑问？直接问——agent 可以给你展开讲背后的 CUDA kernel、ggml 张量运算、或采样算法细节。</p>
+</main>
+<script>
+function show(id){
+ const m={
+  a1:'KV cache 线性增长：32768/4096 = 8 倍。从约 2GB 涨到约 16GB，很可能超出 16GB 总显存。此时必须降低 -ngl、开 flash-attn、或量化 KV cache。',
+  a2:'-ub（ubatch-size）。因为它是物理 batch，直接控制每一步送入 GPU 的数据量。OOM 时降 -ub 是最直接的安全措施。',
+  a3:'影响很小。temp=0.1 时 softmax 输出已经接近 one-hot（几乎总是选最高概率 token），top-p 过滤基本没有可剔除的候选。',
+  a4:'因为 server 启动时就会为每个 slot 预分配 KV cache 缓冲区。 -np 4 意味着 4 倍的 KV cache 初始分配量。'
+ };
+ document.getElementById(id).innerHTML='<span class="good">答案：</span>'+m[id];
+}
+</script>
+</body>
+</html>

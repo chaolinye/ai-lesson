@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama.cpp 核心参数原理速查</title>
+<style>
+ body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;max-width:960px;margin:48px auto;padding:0 24px;line-height:1.65;color:#1d1d1f;background:#fffdf8}h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid #ddd;padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;padding:.08rem .28rem;border-radius:4px}pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px}pre code{background:transparent;padding:0;color:inherit}a{color:#2457a6}.note{background:#fff3cd;border-left:4px solid #ad7b00;padding:.8rem 1rem;margin:1rem 0}.good{color:#137333}
+</style>
+</head>
+<body>
+<h1>llama.cpp 核心参数原理速查</h1>
+<p>对应课程：<a href="../lessons/0004-core-parameters-deep-dive.html">Lesson 0004</a>。官方依据：<a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">server README</a>、<a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/cli/README.md">cli README</a>。</p>
+
+<h2>模型与计算参数</h2>
+<table>
+<thead><tr><th>参数</th><th>默认值</th><th>控制什么</th><th>常见调法</th></tr></thead>
+<tbody>
+<tr><td><code>-m, --model</code></td><td>—</td><td>GGUF 模型路径。</td><td>绝对路径，避免工作目录变化找不到。</td></tr>
+<tr><td><code>-ngl, --n-gpu-layers</code></td><td>auto</td><td>GPU 中存放的模型层数；支持 auto/all/具体数字。</td><td>显存够时设 <code>all</code> 或 <code>999</code>；OOM 时逐步降低。</td></tr>
+<tr><td><code>-c, --ctx-size</code></td><td>0 (=从模型加载)</td><td>上下文窗口大小；决定 KV cache 上限。</td><td>先 4096/8192；需要长上下文再调大，但要算显存。</td></tr>
+<tr><td><code>-b, --batch-size</code></td><td>2048</td><td>逻辑最大 batch；影响 prompt prefill 吞吐量。</td><td>长 prompt 处理慢时可适当增大；通常默认足够。</td></tr>
+<tr><td><code>-ub, --ubatch-size</code></td><td>512</td><td>物理最大 batch；内存/显存峰值控制。</td><td>OOM 于 prefill 阶段时可降低；通常不大于 -b。</td></tr>
+<tr><td><code>-np, --parallel</code></td><td>1</td><td>并行 slot 数；server 并发请求容量。</td><td>Agent 多并发时调高；总 KV cache 随 np 线性增长。</td></tr>
+<tr><td><code>-n, --n-predict</code></td><td>-1</td><td>最大生成 token 数；-1 表示无限，-2 表示直到上下文填满。</td><td>限制回复长度或防止无限生成。</td></tr>
+</tbody>
+</table>
+
+<h2>采样参数（生成控制）</h2>
+<p>官方默认采样链：<code>penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature</code>。它们按顺序过滤/调整 logits，最后从剩余候选中采样。</p>
+<table>
+<thead><tr><th>参数</th><th>默认值</th><th>控制什么</th><th>直觉</th></tr></thead>
+<tbody>
+<tr><td><code>--temp</code></td><td>0.8</td><td>温度；对 logits 做缩放后采样。</td><td>越低越确定（适合代码/事实），越高越发散（适合创意）。</td></tr>
+<tr><td><code>--top-p</code></td><td>0.9</td><td>Nucleus sampling；只从累计概率达 p 的候选集中采样。</td><td>过滤掉长尾低概率 token，保留核心候选。</td></tr>
+<tr><td><code>--top-k</code></td><td>40</td><td>只保留概率最高的 k 个候选。</td><td>硬截断；防止采样到明显离谱的 token。</td></tr>
+<tr><td><code>--min-p</code></td><td>0.05</td><td>只保留概率 ≥ 最高概率 × min_p 的候选。</td><td>相对截断；即使 top-p 很宽，也过滤掉极弱候选。</td></tr>
+<tr><td><code>--presence-penalty</code></td><td>0.0</td><td>已出现过的 token 被惩罚，促进多样性。</td><td>设为正值可减少重复；过高会破坏连贯性。</td></tr>
+<tr><td><code>--frequency-penalty</code></td><td>0.0</td><td>按出现频率惩罚 token；频率越高惩罚越大。</td><td>比 presence penalty 更激进地抑制重复。</td></tr>
+<tr><td><code>-s, --seed</code></td><td>-1</td><td>随机种子；-1 表示每次随机。</td><td>固定 seed 可复现输出；调试用。</td></tr>
+</tbody>
+</table>
+
+<h2>网络参数</h2>
+<table>
+<thead><tr><th>参数</th><th>默认值</th><th>控制什么</th></tr></thead>
+<tbody>
+<tr><td><code>--host</code></td><td>127.0.0.1</td><td>监听地址；0.0.0.0 允许局域网访问。</td></tr>
+<tr><td><code>--port</code></td><td>8080</td><td>HTTP 端口。</td></tr>
+<tr><td><code>--api-key</code></td><td>—</td><td>API 密钥；为空时不验证。</td></tr>
+</tbody>
+</table>
+
+<h2>参考</h2>
+<ul>
+ <li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">官方 server README</a></li>
+ <li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/cli/README.md">官方 cli README</a></li>
+ <li><a href="https://github.com/ggml-org/llama.cpp/discussions/10068">Discussion #10068 — KV cache 内存计算</a></li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama.cpp Agent 对接速查</title>
+<style>
+ body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;max-width:960px;margin:48px auto;padding:0 24px;line-height:1.65;color:#1d1d1f;background:#fffdf8}
+ h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}
+ table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid #ddd;padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}
+ code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;padding:.08rem .28rem;border-radius:4px}
+ pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px}pre code{background:transparent;padding:0;color:inherit}
+ a{color:#2457a6}.note{background:#f7f1df;border-left:4px solid #8a5a00;padding:.8rem 1rem;margin:1rem 0}
+ .card{border:1px solid #ded6c7;border-radius:10px;padding:1rem;background:#fffaf0;margin:1rem 0}
+</style>
+</head>
+<body>
+<h1>llama.cpp Agent 对接速查</h1>
+<p>官方来源：<a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">server README</a>、<a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md">function-calling.md</a>、<a href="https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md">grammars/README.md</a>。</p>
+
+<h2>启动 server（带 API key）</h2>
+<pre><code>llama-server -m model.Q5_K_M.gguf --host 127.0.0.1 --port 8080 -ngl all -c 8192 --api-key "sk-llama-local-key"</code></pre>
+
+<h2>OpenAI-compatible 端点</h2>
+<table>
+<thead><tr><th>端点</th><th>用途</th><th>OpenAI 兼容</th></tr></thead>
+<tbody>
+<tr><td><code>POST /v1/chat/completions</code></td><td>对话生成（主要入口）</td><td>✅</td></tr>
+<tr><td><code>POST /v1/completions</code></td><td>文本补全</td><td>✅</td></tr>
+<tr><td><code>POST /v1/embeddings</code></td><td>向量嵌入</td><td>✅</td></tr>
+<tr><td><code>GET /v1/models</code></td><td>获取模型列表</td><td>✅</td></tr>
+<tr><td><code>GET /slots</code></td><td>查看并行 slot 状态</td><td>—</td></tr>
+<tr><td><code>GET /metrics</code></td><td>Prometheus 指标（需 <code>--metrics</code>）</td><td>—</td></tr>
+</tbody>
+</table>
+
+<h2>curl 测试</h2>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}],\"temperature\":0.7}"</code></pre>
+
+<h2>关键 request body 字段</h2>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>messages</code></td><td>数组</td><td>对话消息，含 role/content。</td></tr>
+<tr><td><code>temperature</code></td><td>float</td><td>采样温度。</td></tr>
+<tr><td><code>max_tokens</code></td><td>int</td><td>最多生成 token 数。</td></tr>
+<tr><td><code>stream</code></td><td>bool</td><td>是否 SSE 流式返回。</td></tr>
+<tr><td><code>tools</code></td><td>数组</td><td>function calling 工具定义。</td></tr>
+<tr><td><code>tool_choice</code></td><td>string/object</td><td>"auto" / "none" / "required" 或 {type:"function",function:{name:"..."}}。</td></tr>
+<tr><td><code>response_format</code></td><td>object</td><td>约束输出格式：<code>{type:"json_object",schema:{...}}</code>。</td></tr>
+</tbody>
+</table>
+
+<h2>JSON schema 约束输出</h2>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"列出三个编程语言\"}],\"response_format\":{\"type\":\"json_object\",\"schema\":{\"type\":\"object\",\"properties\":{\"languages\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"year\":{\"type\":\"integer\"}}}}}}}}"</code></pre>
+
+<h2>Function calling</h2>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"北京的天气怎么样？\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"获取城市天气\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]}"</code></pre>
+
+<h2>并发与监控</h2>
+<table>
+<thead><tr><th>操作</th><th>命令/端点</th></tr></thead>
+<tbody>
+<tr><td>启动 4 并发</td><td><code>-np 4</code></td></tr>
+<tr><td>查看 slot 状态</td><td><code>GET /slots</code></td></tr>
+<tr><td>启用 Prometheus 指标</td><td><code>--metrics</code> + <code>GET /metrics</code></td></tr>
+<tr><td>认证</td><td><code>--api-key "sk-xxx"</code> 或 <code>--api-key-file keys.txt</code></td></tr>
+<tr><td>仅 embedding</td><td><code>--embedding</code></td></tr>
+</tbody>
+</table>
+</body>
+</html>

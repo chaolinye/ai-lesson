@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0006 — 对接 Agent：OpenAI API、JSON schema、Function calling</title>
+<style>
+:root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333;--bad:#b3261e}
+body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65}
+main{max-width:930px;margin:0 auto;padding:48px 24px 80px}
+h1{font-size:2.25rem;line-height:1.15;margin:.2rem 0 .5rem}
+h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line)}
+h3{margin-top:1.4rem}
+.subtitle,.small{color:var(--muted)}
+.mission,.note{background:var(--panel);border-left:4px solid var(--accent);padding:1rem 1.2rem;margin:1.3rem 0}
+code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;border:1px solid #e5dccd;border-radius:4px;padding:.08rem .28rem}
+pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}
+pre code{background:transparent;border:0;color:inherit;padding:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem}
+.card{border:1px solid var(--line);border-radius:10px;padding:1rem;background:#fffaf0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}
+th{background:#f7f1df}
+button{font:inherit;padding:.45rem .75rem;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin:.25rem .3rem .25rem 0}
+.answer{margin:.5rem 0 1rem;font-weight:700}
+.good{color:var(--good)}
+a{color:#2457a6}
+</style>
+</head>
+<body>
+<main>
+<p class="small">Lesson 0006 · <a href="0005-vram-optimization.html">上一课</a> · <a href="../reference/llama-cpp-agent-integration.html">Agent 对接速查</a> · <a href="../reference/llama-cpp-core-params.html">核心参数速查</a></p>
+
+<h1>对接 Agent：OpenAI API、JSON schema、Function calling</h1>
+<p class="subtitle">今天的目标：让你的 llama.cpp server 不只是"能跑模型"，而是成为 Agent 可调用的标准后端服务。</p>
+
+<section class="mission">
+<b>与你的任务的关系：</b>你学 llama.cpp 的最终目的，是让 Agent 通过 API 调本地模型。前五课已经覆盖了安装、量化、参数、显存。这节课把最后一块拼图拼上——让 Agent 能发消息、约束输出格式、甚至调用工具。
+</section>
+
+<h2>1. llama.cpp server 暴露的 API 全景</h2>
+<p>官方 server README 列出了所有端点。核心是：</p>
+
+<table>
+<thead><tr><th>端点</th><th>作用</th><th>你的 Agent 需要哪个？</th></tr></thead>
+<tbody>
+<tr><td><code>POST /v1/chat/completions</code></td><td>对话生成</td><td>✅ 最主要</td></tr>
+<tr><td><code>POST /v1/completions</code></td><td>文本补全</td><td>视情况</td></tr>
+<tr><td><code>POST /v1/embeddings</code></td><td>向量嵌入</td><td>如果 Agent 需要 RAG</td></tr>
+<tr><td><code>GET /v1/models</code></td><td>获取模型信息</td><td>客户端初始化验证</td></tr>
+<tr><td><code>GET /slots</code></td><td>查看并行 slot 状态</td><td>调试用</td></tr>
+<tr><td><code>GET /metrics</code></td><td>Prometheus 指标</td><td>监控（需 <code>--metrics</code>）</td></tr>
+</tbody>
+</table>
+
+<p>最重要的是：<b>这些端点和 OpenAI 的 API 格式一致</b>。这意味着任何兼容 OpenAI API 的客户端库（如 OpenAI Python SDK）可以直接连你的本地 server，只需改 base_url。</p>
+
+<h2>2. 启动带认证的 server</h2>
+<p>一个完整的启动命令：</p>
+<pre><code>llama-server ^
+  -m C:\models\my-8b-instruct.Q5_K_M.gguf ^
+  --host 127.0.0.1 --port 8080 ^
+  -ngl all -c 8192 -fa on ^
+  -np 1 --temp 0.7 ^
+  --api-key "sk-llama-local-key"</code></pre>
+
+<p>官方 server README 说 <code>--api-key</code> 可以设多个逗号分隔的值，也可以用 <code>--api-key-file</code> 指定文件。不设 api-key 时，所有请求都可以访问——本地开发可以，暴露到网络时必须设。</p>
+
+<h2>3. 用 curl 测试 chat completion</h2>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"用中文介绍 llama.cpp\"}],\"temperature\":0.7}"</code></pre>
+
+<p>返回的 JSON 结构：</p>
+<pre><code>{
+  "id": "chat-xxx",
+  "object": "chat.completion",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "llama.cpp 是一个...（模型生成的回复）"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 128,
+    "total_tokens": 170
+  }
+}</code></pre>
+
+<h2>4. 流式输出（streaming）</h2>
+<p>Agent 场景中，流式输出让用户更快看到第一个 token。只需在请求体加 <code>"stream": true</code>：</p>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"数到 5\"}],\"stream\":true}"</code></pre>
+<p>返回 SSE (Server-Sent Events) 格式，每个 chunk 包含 delta 内容。</p>
+
+<h2>5. JSON schema 约束输出格式</h2>
+<p>当 Agent 需要模型输出结构化数据（如 JSON）时，可以用 <code>response_format</code> 约束。官方 <a href="https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md">grammars README</a> 说明 server 支持将 JSON schema 自动转换为 GBNF grammar，在生成时约束 token 选择。</p>
+
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{
+    \"model\":\"local\",
+    \"messages\":[{\"role\":\"user\",\"content\":\"列出三个编程语言及其创始年份\"}],
+    \"response_format\":{
+      \"type\":\"json_object\",
+      \"schema\":{
+        \"type\":\"object\",
+        \"properties\":{
+          \"languages\":{
+            \"type\":\"array\",
+            \"items\":{
+              \"type\":\"object\",
+              \"properties\":{
+                \"name\":{\"type\":\"string\"},
+                \"year\":{\"type\":\"integer\"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }"</code></pre>
+
+<p><b>原理：</b>llama.cpp 在收到请求时把 JSON schema 编译成 GBNF grammar，然后在采样时只允许符合 grammar 的 token。这意味着<b>模型不会输出非法 JSON</b>。</p>
+
+<div class="note"><b>关键限制：</b>JSON schema 约束的是"输出格式"，不是"输出内容"。模型仍然可能在 schema 框架内输出错误的事实——JSON schema 保证语法正确，不保证语义正确。</div>
+
+<h2>6. Function calling（工具调用）</h2>
+<p>官方 <a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md">function-calling.md</a> 说明：llama.cpp server 支持 OpenAI 风格的 function calling。你定义 tools，模型判断是否调用以及用什么参数。</p>
+
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{
+    \"model\":\"local\",
+    \"messages\":[{\"role\":\"user\",\"content\":\"北京的天气怎么样？\"}],
+    \"tools\":[{
+      \"type\":\"function\",
+      \"function\":{
+        \"name\":\"get_weather\",
+        \"description\":\"获取指定城市的天气信息\",
+        \"parameters\":{
+          \"type\":\"object\",
+          \"properties\":{
+            \"city\":{\"type\":\"string\"}
+          },
+          \"required\":[\"city\"]
+        }
+      }
+    }],
+    \"tool_choice\":\"auto\"
+  }"</code></pre>
+
+<p>模型可能返回：</p>
+<pre><code>{
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [{
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "arguments": "{\"city\":\"北京\"}"
+        }
+      }]
+    }
+  }]
+}</code></pre>
+
+<p><b>工作流：</b></p>
+<ol>
+<li>Agent 发请求时携带 tools 定义。</li>
+<li>模型判断需要调用 get_weather，返回 tool_calls。</li>
+<li>Agent 在本地执行工具函数（如查天气 API）。</li>
+<li>Agent 把工具结果作为新的 role:tool 消息发给模型。</li>
+<li>模型基于工具结果生成最终回复。</li>
+</ol>
+
+<h2>7. 用 Python 客户端连接</h2>
+<pre><code>from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8080/v1",
+    api_key="sk-llama-local-key",
+)
+
+response = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "你好！"}],
+    temperature=0.7,
+    stream=False,
+)
+print(response.choices[0].message.content)</code></pre>
+
+<p><b>关键是 <code>base_url</code> 指向你本地 server 的 <code>/v1</code> 路径。</b>其他用法和 OpenAI SDK 完全一致。</p>
+
+<h2>8. 并发：Agent 多请求场景</h2>
+<p>你的 Agent 可能同时处理多个任务。这时需要：</p>
+<ul>
+<li><code>-np N</code>：N 个并行 slot。每个 slot 独立处理一个请求。</li>
+<li>continuous batching 默认开启，动态混合多个请求的 token 计算。</li>
+<li>每个 slot 有独立的 KV cache。总显存 = 权重 + KV cache × N。</li>
+</ul>
+
+<p><b>建议：</b>从 <code>-np 1</code> 开始跑通链路，再逐步增加到 2、4，观察显存和响应时间。如果 Agent 的请求不密集，<code>-np 1</code> 配合 continuous batching 的排队机制也够用。</p>
+
+<h2>9. 检索练习</h2>
+
+<div class="card"><p><b>Q1.</b> 用 <code>response_format</code> 约束 JSON 输出，是让模型"知道应该输出 JSON"，还是"强制模型只能输出合法 JSON"？</p><button onclick="show('a1')">查看答案</button><div id="a1" class="answer"></div></div>
+<div class="card"><p><b>Q2.</b> 当你用 OpenAI Python SDK 连接本地 llama.cpp server，需要改什么？</p><button onclick="show('a2')">查看答案</button><div id="a2" class="answer"></div></div>
+<div class="card"><p><b>Q3.</b> Function calling 中，工具函数（如 get_weather）是模型执行的，还是 Agent 执行的？</p><button onclick="show('a3')">查看答案</button><div id="a3" class="answer"></div></div>
+
+<h2>下一课</h2>
+<p>建议下一课：<b>实操：完整链路从安装到 Agent 调用</b>。我们会真正走一遍从获取 GGUF 模型、启动 server、用 Python SDK 或 curl 调通的完整流程。如果有条件，可以配合你实际的 Agent 框架测试。</p>
+
+<h2>推荐主源</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">官方 server README</a>——端点与参数。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md">官方 function-calling.md</a>——工具调用。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md">官方 grammars/README.md</a>——JSON schema 约束。</li>
+</ul>
+<p class="small">有 Agent 对接的具体问题？告诉我你的 Agent 框架（如 LangChain、AutoGPT、自定义），我可以给具体集成示例。</p>
+</main>
+<script>
+function show(id){
+ const m={
+  a1:'强制。llama.cpp 把 JSON schema 编译成 GBNF grammar，在采样时只允许符合 grammar 的 token。模型不可能输出非法 JSON。',
+  a2:'只需要改 base_url 为 http://127.0.0.1:8080/v1，api_key 设为你设的 --api-key 值。model 字段可以填任意字符串（server 会忽略）。',
+  a3:'Agent 执行。模型只负责判断"该调用哪个工具"和"用哪些参数"并返回 tool_calls；Agent 在本地执行工具逻辑，然后把结果送回模型。'
+ };
+ document.getElementById(id).innerHTML='<span class="good">答案：</span>'+m[id];
+}
+</script>
+</body>
+</html>

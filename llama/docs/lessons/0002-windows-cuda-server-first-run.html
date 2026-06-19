@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0002 — Windows CUDA 版 llama.cpp 与第一个 API 服务</title>
+<style>
+:root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333}body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65}main{max-width:930px;margin:0 auto;padding:48px 24px 80px}h1{font-size:2.25rem;line-height:1.15;margin:.2rem 0 .5rem}h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line)}h3{margin-top:1.4rem}.subtitle,.small{color:var(--muted)}.mission,.note{background:var(--panel);border-left:4px solid var(--accent);padding:1rem 1.2rem;margin:1.3rem 0}code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;border:1px solid #e5dccd;border-radius:4px;padding:.08rem .28rem}pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}pre code{background:transparent;border:0;color:inherit;padding:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem}.card{border:1px solid var(--line);border-radius:10px;padding:1rem;background:#fffaf0}.flow{font-family:Consolas,ui-monospace,monospace;background:#fffaf0;border:1px solid var(--line);padding:1rem;border-radius:10px;white-space:pre-wrap}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}button{font:inherit;padding:.45rem .75rem;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin:.25rem .3rem .25rem 0}.answer{margin:.5rem 0 1rem;font-weight:700}.good{color:var(--good)}a{color:#2457a6}.kbd{font-family:Consolas,monospace;border:1px solid #bbb;border-bottom-width:2px;border-radius:4px;padding:.05rem .25rem;background:white}</style>
+</head>
+<body>
+<main>
+<p class="small">Lesson 0002 · <a href="0001-llama-cpp-mental-model.html">上一课</a> · <a href="../reference/llama-cpp-glossary.html">术语表</a> · <a href="../reference/llama-cpp-windows-commands.html">Windows 命令速查</a></p>
+<h1>Windows CUDA 版 llama.cpp 与第一个 API 服务</h1>
+<p class="subtitle">今天的胜利条件：你能解释“为什么要 CUDA 版”，并知道两条安装路线；然后用 <code>llama-server</code> 启动一个 OpenAI-compatible 本地服务。</p>
+
+<section class="mission"><b>与你的任务的关系：</b>你的最终目标是让 Agent 调本地模型。Agent 不关心你模型是怎么跑的，它只需要一个 OpenAI-compatible endpoint；但你必须关心 CUDA、GGUF、显存和上下文，因为这些决定服务是否快、稳、可用。</section>
+
+<h2>1. 先理解：安装 llama.cpp 其实是在选择“执行后端”</h2>
+<p>llama.cpp 是推理引擎；同一个 <code>.gguf</code> 模型可以在 CPU、CUDA、Vulkan 等后端上执行。官方 README/构建文档列出 CUDA 后端用于 NVIDIA GPU。你的 5060 Ti 16GB 是 NVIDIA GPU，所以学习路线应默认追求 CUDA 加速。</p>
+
+<div class="flow">模型文件 model.gguf
+        │
+        ▼
+llama.cpp 可执行文件：llama-server.exe
+        │
+        ├─ CPU backend：能跑，但通常慢
+        └─ CUDA backend：把大部分矩阵计算交给 NVIDIA GPU</div>
+
+<p>所以“装好了 llama.cpp”不够精确。真正的问题是：</p>
+<ul>
+<li>我是否有 <code>llama-server.exe</code>？</li>
+<li>它是否带 CUDA 支持？</li>
+<li>启动时模型层是否真的 offload 到 GPU？</li>
+</ul>
+
+<h2>2. 两条安装路线：先快跑，再可控</h2>
+
+<div class="grid">
+<div class="card"><h3>路线 A：Winget / Releases 预构建</h3><p>适合先快速跑通 server。官方 install 文档给出 Windows 上可用：</p><pre><code>winget install llama.cpp</code></pre><p>优点：简单。风险：你需要确认安装出来的二进制是否符合你的 CUDA 需求。</p></div>
+<div class="card"><h3>路线 B：源码 CUDA 构建</h3><p>适合你这种会 C/C++、想理解原理和参数的人。官方 build 文档的 CUDA 构建核心是：</p><pre><code>cmake -B build -DGGML_CUDA=ON
+cmake --build build --config Release</code></pre><p>优点：可控。代价：要处理 VS/CMake/CUDA Toolkit 环境。</p></div>
+</div>
+
+<p class="note"><b>建议：</b>如果你现在就要跑，先试路线 A；如果发现 GPU 没用上，或后续要稳定复现环境，再走路线 B。学习上我们两条都理解，但实操优先用能最快反馈的路线。</p>
+
+<h2>3. 路线 A：预构建安装检查</h2>
+<p>在 PowerShell 中执行：</p>
+<pre><code>winget install llama.cpp
+llama-server --help</code></pre>
+<p>你要观察的不是把 help 全背下来，而是确认命令存在，并在参数里看到类似：</p>
+<ul>
+<li><code>-m, --model</code></li>
+<li><code>-c, --ctx-size</code></li>
+<li><code>-ngl, --gpu-layers, --n-gpu-layers</code></li>
+<li><code>--host</code> / <code>--port</code></li>
+</ul>
+<p>官方 server README 说明 <code>-ngl</code> 是 “max. number of layers to store in VRAM”，新版本默认可能是 <code>auto</code>。这句话很重要：<b>VRAM 里放的是模型层，不是“整个程序”。</b></p>
+
+<h2>4. 路线 B：源码 CUDA 构建的最小闭环</h2>
+<p>如果你要自己构建，先准备：</p>
+<ul>
+<li>Visual Studio 2022，包含 “Desktop development with C++”。官方 build docs 特别提醒 Windows 构建要用 VS Developer PowerShell/Command Prompt。</li>
+<li>Git。</li>
+<li>CMake。</li>
+<li>NVIDIA CUDA Toolkit。</li>
+</ul>
+<p>然后在 <b>Developer PowerShell for VS 2022</b> 中：</p>
+<pre><code>git clone https://github.com/ggml-org/llama.cpp
+cd llama.cpp
+cmake -B build -DGGML_CUDA=ON
+cmake --build build --config Release -j</code></pre>
+<p>构建完成后，常见可执行文件会在类似路径：</p>
+<pre><code>build\bin\Release\llama-server.exe</code></pre>
+<p class="note"><b>如果遇到 <code>No CUDA toolset found</code>：</b>这通常不是 llama.cpp 参数问题，而是 CMake 没找到 CUDA Toolkit 或 VS/CUDA 集成环境。先检查 <code>nvcc --version</code>、CUDA Toolkit 是否安装、是否在 VS Developer shell 中运行。</p>
+
+<h2>5. 选择第一个模型：不要一开始挑战极限</h2>
+<p>你的显卡 16GB 很适合 7B/8B instruct 模型。第一轮目标是 API 跑通，不是压榨最大模型。</p>
+<table>
+<thead><tr><th>选择</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>7B/8B instruct GGUF</td><td>足够小，容易验证 CUDA/offload/API 全链路。</td></tr>
+<tr><td><code>Q5_K_M</code></td><td>质量和体积折中，16GB 上通常比 Q4 更安心。</td></tr>
+<tr><td><code>Q4_K_M</code></td><td>如果想留更多显存给上下文/KV cache，选它。</td></tr>
+<tr><td>暂不选 30B+</td><td>容易让你把“模型太大”的问题误判成“安装失败”。</td></tr>
+</tbody>
+</table>
+<p>从 Hugging Face 找模型时，关键词通常是：模型名 + <code>GGUF</code> + <code>Instruct</code>。后续我们会单独上一课讲如何读模型卡和选择量化。</p>
+
+<h2>6. 启动第一个 OpenAI-compatible server</h2>
+<p>假设你下载了：</p>
+<pre><code>C:\models\your-model.Q5_K_M.gguf</code></pre>
+<p>启动：</p>
+<pre><code>llama-server ^
+  -m C:\models\your-model.Q5_K_M.gguf ^
+  --host 127.0.0.1 ^
+  --port 8080 ^
+  -ngl auto ^
+  -c 4096</code></pre>
+<p>如果你的版本不接受 <code>-ngl auto</code>，试：</p>
+<pre><code>-ngl 99</code></pre>
+<p>含义不是“真的有 99 层都存在”，而是常用作“尽量多 offload”。新版本 help 若写支持 <code>auto</code>/<code>all</code>，优先用它们。</p>
+
+<h2>7. 测试 API</h2>
+<p>PowerShell 里可以先用 curl 测试。Windows 的 curl 引号容易烦，下面给一个单行版本：</p>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"用一句中文介绍 llama.cpp\"}],\"temperature\":0.7}"</code></pre>
+<p>如果返回 JSON，并且里面有 assistant 内容，你已经完成 Agent 所需 API 的最小闭环。</p>
+
+<h2>8. 如何判断 CUDA 真在工作？</h2>
+<ol>
+<li>看 server 启动日志。通常会打印 backend、offloaded layers、VRAM 使用等信息。</li>
+<li>开另一个终端运行：<pre><code>nvidia-smi</code></pre>观察显存占用和 GPU 利用率。</li>
+<li>如果 <code>-ngl</code> 从低到高时速度和显存明显变化，说明 offload 起作用。</li>
+</ol>
+
+<h2>9. 小练习：把命令拆成概念</h2>
+<div class="card"><p><b>Q1.</b> <code>--host 127.0.0.1</code> 和 <code>--port 8080</code> 解决的是模型质量问题、网络入口问题，还是显存问题？</p><button onclick="show('a1')">查看答案</button><div id="a1" class="answer"></div></div>
+<div class="card"><p><b>Q2.</b> 为什么第一轮建议 <code>-c 4096</code>，而不是直接开到 32768？</p><button onclick="show('a2')">查看答案</button><div id="a2" class="answer"></div></div>
+<div class="card"><p><b>Q3.</b> 如果 server 能启动但生成很慢，你首先怀疑 CPU/GPU offload、temperature，还是 top-p？</p><button onclick="show('a3')">查看答案</button><div id="a3" class="answer"></div></div>
+
+<h2>下一课</h2>
+<p>建议下一课：<b>如何选择 GGUF 模型与量化版本：Q4_K_M、Q5_K_M、Q8_0 到底怎么取舍</b>。这会直接服务你的 16GB 显存环境。</p>
+
+<h2>推荐主源</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md">官方 install.md</a>：预构建安装。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md">官方 build.md</a>：Windows/CUDA 构建。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">官方 server README</a>：OpenAI-compatible server 与参数。</li>
+</ul>
+<p class="small">遇到任何报错，把完整命令和前后 30 行日志发给我；我会带你诊断。</p>
+</main>
+<script>
+function show(id){const m={a1:'网络入口问题。host/port 决定 HTTP 服务监听在哪里，方便 Agent 连接。',a2:'因为 context 越大，KV cache 越大；第一轮目标是跑通链路，避免把显存问题引入安装验证。',a3:'优先怀疑 CPU/GPU offload。temperature/top-p 影响采样风格，不是主要性能开关。'};document.getElementById(id).innerHTML='<span class="good">答案：</span>'+m[id];}
+</script>
+</body>
+</html>

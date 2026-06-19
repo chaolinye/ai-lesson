@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0003 — 如何选择 GGUF 模型与量化版本</title>
+<style>
+:root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333}body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65}main{max-width:930px;margin:0 auto;padding:48px 24px 80px}h1{font-size:2.25rem;line-height:1.15;margin:.2rem 0 .5rem}h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line)}h3{margin-top:1.4rem}.subtitle,.small{color:var(--muted)}.mission,.note{background:var(--panel);border-left:4px solid var(--accent);padding:1rem 1.2rem;margin:1.3rem 0}code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;border:1px solid #e5dccd;border-radius:4px;padding:.08rem .28rem}pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}pre code{background:transparent;border:0;color:inherit;padding:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem}.card{border:1px solid var(--line);border-radius:10px;padding:1rem;background:#fffaf0}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}button{font:inherit;padding:.45rem .75rem;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin:.25rem .3rem .25rem 0}.answer{margin:.5rem 0 1rem;font-weight:700}.good{color:var(--good)}a{color:#2457a6}.warn{background:#fff3cd;border-left:4px solid #ad7b00;padding:.8rem 1rem;margin:1rem 0}</style>
+</head>
+<body>
+<main>
+<p class="small">Lesson 0003 · <a href="0002-windows-cuda-server-first-run.html">上一课</a> · <a href="../reference/gguf-quantization-selection.html">量化选择速查</a> · <a href="../reference/llama-cpp-glossary.html">术语表</a></p>
+<h1>如何选择 GGUF 模型与量化版本</h1>
+<p class="subtitle">今天的胜利条件：你能为一个 5060 Ti 16GB 环境推荐一套“模型 + 量化”组合，并解释为什么不是别的组合。</p>
+
+<section class="mission">
+<b>与你的任务的关系：</b>你上一课已经能把 server 跑起来。但如果模型选错或量化选错，要么显存爆炸，要么输出质量下降。这节课把“选模型”从玄学变成决策。
+</section>
+
+<h2>1. 量化到底是什么？——不只是“压缩包”</h2>
+<p>量化不是 zip 那种无损压缩。官方 <a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md">quantize README</a> 明确说：量化通过降低权重精度来缩小体积，但可能引入 accuracy loss。官方常用 <b>perplexity (ppl)</b> 和 <b>Kullback–Leibler Divergence (kld)</b> 来衡量这种损失。</p>
+
+<div class="grid">
+<div class="card"><b>不是“精度变低就会胡说”</b><br>量化主要影响模型权重的表示精度。对很多任务来说，Q5_K_M 与 FP16 的差异人类很难感知。</div>
+<div class="card"><b>但量化不是免费的</b><br>更低 bit 数意味着更大的信息损失。Q4_K_M 比 Q5_K_M 省约 0.7GB (7B 模型)，但 perplexity 差距也更大。</div>
+</div>
+
+<h2>2. 读懂量化名称：Q5_K_M 是什么意思？</h2>
+<p>官方 wiki 和社区共识的解读：</p>
+<table>
+<thead><tr><th>部分</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><code>Q5</code></td><td>每个权重约 5 bit。bit 越高，理论上保留信息越多。</td></tr>
+<tr><td><code>K</code></td><td>K-quant，改进版量化方法，比旧版更精细（旧版如 Q4_0、Q4_1 通常不推荐用于新模型）。</td></tr>
+<tr><td><code>M/S/L</code></td><td>混合精度档位。M = Medium（常用），S = Small（更省），L = Large（更保真）。并非所有量化都有这三个档位。</td></tr>
+</tbody>
+</table>
+<p class="warn"><b>旧版量化</b>：Q4_0、Q4_1、Q5_0、Q5_1 是较老的格式。社区对新模型通常优先 K-quants。</p>
+
+<h2>3. 官方数据：量化质量与体积对比</h2>
+<p>基于社区整理的近似数据（以 7B 模型为例，来自官方工具与社区 benchmark）：</p>
+<table>
+<thead><tr><th>量化</th><th>约大小</th><th>相对 FP16 ppl 变化</th><th>一句话定位</th></tr></thead>
+<tbody>
+<tr><td><code>FP16</code></td><td>13.0 GB</td><td>—</td><td>理论基准，通常不直接跑。</td></tr>
+<tr><td><code>Q8_0</code></td><td>7.0 GB</td><td>+0.03%</td><td><span class="good">近乎无损</span>，小模型或质量敏感场景选它。</td></tr>
+<tr><td><code>Q6_K</code></td><td>5.5 GB</td><td>+0.13%</td><td><span class="good">最佳质量/体积折中之一</span>。</td></tr>
+<tr><td><code>Q5_K_M</code></td><td>4.8 GB</td><td>+0.39%</td><td><b>16GB 显存首选候选之一</b>，质量与体积兼顾。</td></tr>
+<tr><td><code>Q4_K_M</code></td><td>4.1 GB</td><td>+1.68%</td><td><b>社区常用默认推荐</b>，显存紧张或模型更大时的好选择。</td></tr>
+<tr><td><code>Q4_K_S</code></td><td>3.9 GB</td><td>+2.62%</td><td>极限省空间，但对推理质量影响更明显。</td></tr>
+</tbody>
+</table>
+
+<div class="note"><b>官方 perplexity 工具的关键警告：</b>官方 <a href="https://github.com/ggml-org/llama.cpp/tree/master/tools/perplexity">perplexity README</a> 指出：perplexity 不能跨不同 tokenizer 的模型直接比较。它最适合做同模型不同量化的质量对比。如果你看到网上有人拿 Qwen 的 ppl 和 Llama 的 ppl 比，那个数字本身没有直接意义。</div>
+
+<h2>4. 5060 Ti 16GB 的选择策略</h2>
+<p>我们回到第一课的心智模型：</p>
+<pre><code>总 VRAM 占用 ≈ 量化后权重 + KV cache + 计算缓冲 + server/驱动开销</code></pre>
+<p>这意味着：</p>
+<ol>
+<li>选 Q5_K_M 还是 Q4_K_M，不只是看“模型文件多大”，还要看你要留多少显存给 KV cache 和并发。</li>
+<li>上下文长度（<code>-c</code>）越长，KV cache 越大，留给权重的预算就越紧。</li>
+<li>并发（<code>-np</code>）越高，KV cache 也成倍增长。</li>
+</ol>
+
+<table>
+<thead><tr><th>模型大小</th><th>推荐量化</th><th>理由（16GB 视角）</th></tr></thead>
+<tbody>
+<tr><td>7B/8B</td><td>Q5_K_M 或 Q4_K_M</td><td>两者都舒适。Q5_K_M 更保真；Q4_K_M 可为长上下文留更多余量。</td></tr>
+<tr><td>14B</td><td>Q5_K_M 或 Q4_K_M</td><td>Q5_K_M ≈ 9.6GB；Q4_K_M ≈ 8.2GB。若上下文大或并发高，优先 Q4_K_M。</td></tr>
+<tr><td>22B/27B</td><td>Q4_K_M（或更小）</td><td>Q4_K_M 约 12–14GB，已接近上限。上下文和并发要保守。</td></tr>
+<tr><td>32B+</td><td>Q4_K_M 或更小，或 CPU 混跑</td><td>即使 Q4_K_M 也可能超过显存；需要仔细计算或降低 -ngl。</td></tr>
+</tbody>
+</table>
+
+<h2>5. 模型在哪里找？</h2>
+<p>Hugging Face Hub 是目前 GGUF 模型最主要的来源。官方 README 说明你可以用 <code>-hf</code> 参数直接从 Hugging Face 拉模型：</p>
+<pre><code>llama-server -hf user/model:Q5_K_M</code></pre>
+<p>搜索技巧：</p>
+<ul>
+<li>在 <a href="https://huggingface.co/models?apps=llama.cpp">huggingface.co/models?apps=llama.cpp</a> 筛选 llama.cpp 兼容模型。</li>
+<li>优先选 <b>Instruct</b> 后缀的模型，说明它经过微调，更适合对话/chat completion。</li>
+<li>看模型卡（Model Card）：确认上下文长度、chat template、license、推荐的 GGUF 版本。</li>
+<li>确认模型卡里有 chat template。没有 chat template 的模型，llama-server 可能无法正确把 messages 转成 prompt。</li>
+</ul>
+
+<h2>6. 一个决策示例</h2>
+<div class="card">
+<p><b>场景：</b>你有一块 5060 Ti 16GB，想让 Agent 调本地 8B instruct 模型，上下文最多 8K，单并发。</p>
+<p><b>计算：</b></p>
+<ul>
+<li>Q5_K_M 权重 ≈ 5.5 GB (8B 模型)</li>
+<li>KV cache 约 2–4 GB（取决于 8K 上下文、层数、隐藏维度）</li>
+<li>计算缓冲 + server 开销 ≈ 1–2 GB</li>
+<li>总需求 ≈ 9–11 GB，16GB 显存有余量。</li>
+</ul>
+<p><b>结论：</b>选 Q5_K_M 合理。如果未来并发增加，再评估是否降到 Q4_K_M 或减少上下文。</p>
+</div>
+
+<h2>7. 小练习：做选择并解释</h2>
+<div class="card"><p><b>Q1.</b> 为什么不能只看“模型文件小于 16GB”就选 Q8_0 的 27B 模型？</p><button onclick="show('a1')">查看答案</button><div id="a1" class="answer"></div></div>
+<div class="card"><p><b>Q2.</b> 同一个 7B 模型，Q4_K_M 和 Q5_K_M 的 perplexity 差距约 +1.3%。这直接意味着 Q4_K_M “不可用”吗？</p><button onclick="show('a2')">查看答案</button><div id="a2" class="answer"></div></div>
+<div class="card"><p><b>Q3.</b> 在 Hugging Face 上搜索 GGUF 时，为什么要优先选带 “Instruct” 后缀的模型？</p><button onclick="show('a3')">查看答案</button><div id="a3" class="answer"></div></div>
+
+<h2>下一课</h2>
+<p>建议下一课：<b>核心参数原理详解：-ngl、-c、-b、-ub、-np、--temp、--top-p 到底控制什么</b>。把已经见过的参数逐个拆开，理解它们对推理过程的真实影响。</p>
+
+<h2>推荐主源</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md">官方 quantize README</a>：量化工具与损失指标。</li>
+<li><a href="https://github.com/ggml-org/llama.cpp/tree/master/tools/perplexity">官方 perplexity 工具</a>：perplexity 是什么、怎么用、为什么不能跨模型比较。</li>
+<li><a href="https://huggingface.co/models?apps=llama.cpp">Hugging Face — models?apps=llama.cpp</a>：发现 GGUF 模型。</li>
+</ul>
+<p class="small">遇到模型选择困惑时，告诉我你的任务场景（模型大小、上下文长度、并发数），我可以帮你算显存预算。</p>
+</main>
+<script>
+function show(id){const m={a1:'因为运行时不只放权重，还有 KV cache、计算缓冲、server 开销。Q8_0 的 27B 模型权重约 27GB，已经超过 16GB 显存，根本放不下全部权重。',a2:'不一定。perplexity 只是统计质量指标，+1.3% 差距不等于“不可用”。很多任务 Q4_K_M 完全可用；但对数学、代码等高密度推理任务，Q5_K_M 可能更稳。',a3:'Instruct 表示模型经过指令微调，理解对话格式。选 base 模型做 chat completion，输出风格会明显不对。'};document.getElementById(id).innerHTML='<span class="good">答案：</span>'+m[id];}
+</script>
+</body>
+</html>

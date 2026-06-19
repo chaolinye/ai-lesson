@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama.cpp Glossary</title>
+<style>
+  body{font-family: ui-serif, Georgia, "Noto Serif SC", serif; max-width: 880px; margin: 48px auto; padding: 0 24px; line-height:1.65; color:#1d1d1f; background:#fffdf8;}
+  h1{font-size:2rem; margin-bottom:.25rem} h2{margin-top:2rem; border-top:1px solid #ddd; padding-top:1rem}
+  dt{font-weight:700; margin-top:1rem} dd{margin-left:0; color:#333} code{font-family: ui-monospace, Consolas, monospace; background:#f3efe6; padding:.1rem .3rem; border-radius:4px}
+  .note{background:#f7f1df; border-left:4px solid #b78b2b; padding: .8rem 1rem;}
+  a{color:#2457a6}
+</style>
+</head>
+<body>
+<h1>llama.cpp 术语速查</h1>
+<p class="note">这是后续课程共用的术语表。每次遇到参数时，优先把它放回这些概念里理解。</p>
+
+<h2>核心对象</h2>
+<dl>
+  <dt>llama.cpp</dt>
+  <dd>一个 C/C++ LLM 推理引擎，重点是本地运行 GGUF 模型，并支持 CPU、CUDA、Metal、Vulkan 等后端。官方 README 称其支持量化模型、GPU/CPU 混合推理和 OpenAI-compatible server。</dd>
+
+  <dt>GGUF</dt>
+  <dd>llama.cpp 当前主要使用的模型文件格式。它把模型权重、tokenizer、模型元数据等放在一个文件中。运行时常用 <code>-m model.gguf</code> 指定。</dd>
+
+  <dt>量化 / Quantization</dt>
+  <dd>用更少 bit 表示权重的编码方式。目标通常是降低内存/显存占用、提高吞吐，但会带来不同程度质量损失。常见如 <code>Q4_K_M</code>、<code>Q5_K_M</code>、<code>Q8_0</code>。</dd>
+
+  <dt>模型权重 / Weights</dt>
+  <dd>训练后固定下来的参数。加载模型时主要占用内存或显存。量化主要压缩的是权重。</dd>
+
+  <dt>KV cache</dt>
+  <dd>推理时为注意力机制保存的 key/value 中间状态。它随上下文长度、层数、隐藏维度、并发数增长；不是模型文件的一部分，但会显著占用内存/显存。</dd>
+</dl>
+
+<h2>推理阶段</h2>
+<dl>
+  <dt>Prefill / Prompt processing</dt>
+  <dd>把已有 prompt 一次性喂进模型，建立 KV cache。通常更像矩阵-矩阵计算，受 batch 参数影响明显。</dd>
+
+  <dt>Decode / Token generation</dt>
+  <dd>逐 token 生成回复。每一步用当前 token 和已缓存的 KV 计算下一个 token。用户感受到的 tokens/s 多指 decode 速度。</dd>
+
+  <dt>Context size</dt>
+  <dd>一次会话最多能容纳的 token 数，包括系统提示、用户消息、历史、模型输出。llama.cpp 常用 <code>-c</code> 或 <code>--ctx-size</code> 设置。</dd>
+</dl>
+
+<h2>常见命令参数</h2>
+<dl>
+  <dt><code>-m</code> / <code>--model</code></dt><dd>GGUF 模型路径。</dd>
+  <dt><code>-ngl</code> / <code>--n-gpu-layers</code></dt><dd>把多少层 offload 到 GPU。显存足够时常设很大，让尽可能多的层在 GPU 上运行。</dd>
+  <dt><code>-c</code> / <code>--ctx-size</code></dt><dd>上下文窗口大小。越大，KV cache 占用越高。</dd>
+  <dt><code>-b</code> / <code>--batch-size</code></dt><dd>逻辑 batch 大小，影响 prompt processing。</dd>
+  <dt><code>-ub</code> / <code>--ubatch-size</code></dt><dd>物理 micro-batch 大小，用于在内存限制内切分计算。</dd>
+  <dt><code>-t</code> / <code>--threads</code></dt><dd>CPU 线程数。GPU offload 多时影响相对变小，但仍会影响采样、未 offload 层等。</dd>
+  <dt><code>--temp</code></dt><dd>temperature，控制采样随机性。越低越确定，越高越发散。</dd>
+  <dt><code>--top-p</code></dt><dd>nucleus sampling，只在累计概率达到 p 的候选 token 集中采样。</dd>
+  <dt><code>-np</code> / <code>--parallel</code></dt><dd>server 中的并行 slot 数。并发越高，总 KV cache 需求越高。</dd>
+</dl>
+
+<h2>参考</h2>
+<ul>
+  <li><a href="https://github.com/ggml-org/llama.cpp">llama.cpp README</a></li>
+  <li><a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md">Official build docs</a></li>
+  <li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">llama-server README</a></li>
+  <li><a href="https://github.com/ggml-org/llama.cpp/wiki/Tensor-Encoding-Schemes">Tensor Encoding Schemes wiki</a></li>
+</ul>
+</body>
+</html>

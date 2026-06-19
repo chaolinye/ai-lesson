@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama.cpp 实操速查：完整链路</title>
+<style>
+ body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;max-width:960px;margin:48px auto;padding:0 24px;line-height:1.65;color:#1d1d1f;background:#fffdf8}
+ h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}
+ table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid #ddd;padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}
+ code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;padding:.08rem .28rem;border-radius:4px}
+ pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}pre code{background:transparent;padding:0;color:inherit}
+ a{color:#2457a6}.note{background:#f7f1df;border-left:4px solid #8a5a00;padding:.8rem 1rem;margin:1rem 0}
+ .cmd{background:#f0f4ff;border-left:4px solid #3b82f6;padding:.5rem 1rem;margin:.8rem 0;font-family:Consolas,monospace;font-size:.95rem}
+</style>
+</head>
+<body>
+<h1>llama.cpp 实操速查：完整链路</h1>
+<p>配套课程：<a href="../lessons/0007-hands-on-full-pipeline.html">Lesson 0007</a>。</p>
+
+<h2>下载模型</h2>
+<p>推荐测试模型（小、快）：</p>
+<pre><code># 方法 1：直接用 -hf 下载并启动（一次性）
+llama-server -hf Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M
+
+# 方法 2：先下载模型文件到本地
+# 从 Hugging Face 手动下载 GGUF 文件到 C:\models\</code></pre>
+
+<h2>启动 server</h2>
+<pre><code>llama-server ^
+  -m C:\models\model.Q5_K_M.gguf ^
+  --host 127.0.0.1 --port 8080 ^
+  -ngl all -c 8192 -fa on ^
+  -np 1 --temp 0.7 ^
+  --api-key "sk-llama-local-key"</code></pre>
+
+<h2>测试 API</h2>
+<pre><code># Chat completion
+curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}],\"temperature\":0.7}"
+
+# Streaming
+curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"数到3\"}],\"stream\":true}"
+
+# JSON schema 约束
+curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-llama-local-key" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"列出三种编程语言\"}],\"response_format\":{\"type\":\"json_object\",\"schema\":{\"type\":\"object\",\"properties\":{\"languages\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}}}"</code></pre>
+
+<h2>Python 客户端</h2>
+<pre><code>pip install openai</code></pre>
+<pre><code>from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-llama-local-key")
+r = client.chat.completions.create(model="local", messages=[{"role":"user","content":"你好"}])
+print(r.choices[0].message.content)</code></pre>
+
+<h2>确认 CUDA 工作</h2>
+<pre><code># 另一个终端运行
+nvidia-smi -l 2</code></pre>
+<p>观察显存使用和 GPU 利用率。</p>
+
+<h2>关闭 server</h2>
+<pre><code># 在 server 终端按 Ctrl+C</code></pre>
+</body>
+</html>

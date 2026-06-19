@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama.cpp Windows 命令速查</title>
+<style>
+ body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;max-width:920px;margin:48px auto;padding:0 24px;line-height:1.65;color:#1d1d1f;background:#fffdf8}h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;padding:.1rem .3rem;border-radius:4px}pre code{background:transparent;padding:0}.warn{background:#fff3cd;border-left:4px solid #ad7b00;padding:.8rem 1rem}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ddd;padding:.55rem;text-align:left;vertical-align:top}a{color:#2457a6}
+</style>
+</head>
+<body>
+<h1>llama.cpp Windows 命令速查</h1>
+<p>配套课程：<a href="../lessons/0002-windows-cuda-server-first-run.html">Lesson 0002</a>。官方依据：<a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md">install.md</a>、<a href="https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md">build.md</a>、<a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">server README</a>。</p>
+
+<h2>路线 A：预构建安装</h2>
+<pre><code>winget install llama.cpp
+llama-server --help</code></pre>
+<p class="warn">注意：Winget 安装快，但具体是否包含你想要的 CUDA 后端，要以 <code>llama-server --help</code>、启动日志、实际 GPU 使用情况为准。若不符合预期，走路线 B 自行 CUDA 构建。</p>
+
+<h2>路线 B：源码 CUDA 构建</h2>
+<pre><code>git clone https://github.com/ggml-org/llama.cpp
+cd llama.cpp
+cmake -B build -DGGML_CUDA=ON
+cmake --build build --config Release -j</code></pre>
+<p>Windows 上按官方 build docs，通常需要 Visual Studio 2022 C++ 桌面开发组件、CMake、Git，以及 NVIDIA CUDA Toolkit。请在 “Developer PowerShell/Command Prompt for VS 2022” 中构建。</p>
+
+<h2>启动 server</h2>
+<pre><code>llama-server \
+  -m C:\models\your-model.gguf \
+  --host 127.0.0.1 \
+  --port 8080 \
+  -ngl auto \
+  -c 4096</code></pre>
+
+<h2>测试 OpenAI-compatible API</h2>
+<pre><code>curl http://127.0.0.1:8080/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in Chinese.\"}],\"temperature\":0.7}"</code></pre>
+
+<h2>参数速查</h2>
+<table>
+<thead><tr><th>参数</th><th>作用</th><th>初始建议</th></tr></thead>
+<tbody>
+<tr><td><code>-m</code></td><td>模型 GGUF 路径。</td><td>先用 7B/8B instruct GGUF。</td></tr>
+<tr><td><code>--host</code></td><td>监听地址。</td><td>本机 Agent 用 <code>127.0.0.1</code>；局域网访问再考虑 <code>0.0.0.0</code>。</td></tr>
+<tr><td><code>--port</code></td><td>HTTP 端口。</td><td><code>8080</code>。</td></tr>
+<tr><td><code>-ngl</code></td><td>GPU offload 层数；新版本可用 <code>auto</code>/<code>all</code>。</td><td>先 <code>auto</code> 或 <code>all</code>；OOM 再降。</td></tr>
+<tr><td><code>-c</code></td><td>上下文大小；影响 KV cache。</td><td>先 <code>4096</code> 或 <code>8192</code>。</td></tr>
+<tr><td><code>-b</code></td><td>逻辑 batch；影响 prompt processing。</td><td>默认即可，遇到长 prompt 性能问题再调。</td></tr>
+<tr><td><code>-ub</code></td><td>物理 micro-batch；控制显存峰值。</td><td>默认即可，OOM 可降。</td></tr>
+<tr><td><code>-np</code></td><td>并行 slot 数。</td><td>先 <code>1</code>；Agent 多并发再调。</td></tr>
+</tbody>
+</table>
+</body>
+</html>

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 2: GPTQ — 量化不再是一次孤立事件</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&family=Source+Serif+4:opsz@8..60&display=swap');
+  :root { --width: 720px; --sans: 'Inter', -apple-system, sans-serif; --serif: 'Source Serif 4', Georgia, serif; }
+  body { font-family: var(--serif); max-width: var(--width); margin: 3rem auto; padding: 0 1.5rem; color: #1a1a1a; font-size: 1.05rem; line-height: 1.7; }
+  h1, h2, h3, h4 { font-family: var(--sans); font-weight: 600; line-height: 1.3; }
+  h1 { font-size: 2rem; margin-bottom: .2rem; letter-spacing: -.02em; }
+  .subtitle { font-family: var(--sans); color: #64748b; font-size: 1rem; margin-top: 0; margin-bottom: 2rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.5rem; border-bottom: 1.5px solid #e2e8f0; padding-bottom: .35rem; }
+  h3 { font-size: 1.1rem; margin-top: 1.8rem; }
+  p { margin: 1rem 0; }
+  code { background: #f1f5f9; padding: .15rem .4rem; border-radius: 4px; font-size: .88em; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 1rem 1.2rem; border-radius: 8px; overflow-x: auto; font-size: .82rem; line-height: 1.5; }
+  pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+  .callout { background: #eff6ff; border-left: 4px solid #3b82f6; padding: .75rem 1rem; margin: 1.5rem 0; border-radius: 0 6px 6px 0; font-family: var(--sans); font-size: .95rem; }
+  .callout.warn { background: #fef3c7; border-left-color: #f59e0b; }
+  .callout.tip { background: #f0fdf4; border-left-color: #22c55e; }
+  table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; font-family: var(--sans); font-size: .9rem; }
+  th, td { border: 1px solid #e2e8f0; padding: .5rem .75rem; text-align: left; }
+  th { background: #f1f5f9; font-weight: 600; }
+  .exercise { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.2rem 1.5rem; margin: 2rem 0; }
+  .exercise h3 { margin-top: 0; color: #2563eb; }
+  .footnote { font-family: var(--sans); font-size: .85rem; color: #64748b; border-top: 1px solid #e2e8f0; margin-top: 3rem; padding-top: 1rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .highlight-box { background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border-radius: 12px; padding: 1.2rem 1.5rem; margin: 1.5rem 0; }
+  .highlight-box strong { color: #0369a1; }
+  .math { font-family: 'Times New Roman', serif; font-style: italic; }
+  .fig { text-align: center; margin: 1.5rem 0; font-size: .9rem; color: #64748b; }
+  .fig pre { text-align: left; display: inline-block; }
+  .q-box { background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 8px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .q-box strong { color: #7c3aed; }
+</style>
+</head>
+<body>
+
+<h1>Lesson 2: GPTQ</h1>
+<p class="subtitle">量化不再是一次孤立事件——误差可以补偿</p>
+
+<p>上节课我们做了朴素量化：对每个权重独立执行 <code>round(x / scale)</code>。这就像把一列数字一个一个四舍五入，完全不管它们之间的关系。</p>
+
+<p>但考虑一个问题：</p>
+
+<blockquote style="font-family: var(--sans); color: #475569; border-left: 3px solid #94a3b8; padding-left: 1rem; margin: 1.5rem 0;">
+如果我要把 <code>[3.2, 3.3, 3.4]</code> 量化成整数。独立舍入是 <code>[3, 3, 3]</code>，总误差 0.9。<br>
+但如果我把 <code>3.4</code> 量化成 <code>4</code>，同时把 <code>3.2</code> 和 <code>3.3</code> 调整到 <code>[3, 3]</code>，总误差只有 0.5。<br>
+<strong>允许「串通」能得到更好的结果。</strong>
+</blockquote>
+
+<p><strong>GPTQ</strong> (Generative Pre-trained Transformer Quantization) 的核心思想就是这个：<strong>量化一个权重后，调整剩下的权重来补偿误差</strong>。它在 2023 年由 Frantar 等人提出，是第一个把 LLM 压到 4-bit 而不明显损失精度的实用方法。</p>
+
+<div class="callout">
+<strong>📌 核心 insight：</strong>朴素量化对所有权重一视同仁地做 round。GPTQ 意识到——<strong>权重之间不是独立的</strong>。你改变一个权重，输出会变，但你也可以通过改变其他权重来「弥补」这个变化。
+</div>
+
+<h2>从 OBS 到 OBQ 到 GPTQ</h2>
+
+<p>GPTQ 的思想来源于一个更古老的方法：<strong>Optimal Brain Surgeon (OBS)</strong>——它是一个剪枝（pruning）算法，问的问题是：「如果我要砍掉（设为 0）一个权重，我该怎么调整剩余权重来最小化损失？」</p>
+
+<p><strong>Optimal Brain Quantization (OBQ)</strong> 把剪枝换成量化：「如果我要把这个权重量化到最近的整数，我该怎么调整剩余权重来补偿？」</p>
+
+<p>OBQ 的问题是——它太慢了。它一次处理一个权重，每处理完一个就要更新整个矩阵。对于一个 7B 模型来说，这是天文数字。</p>
+
+<p><strong>GPTQ 的三个关键加速：</strong></p>
+
+<ol>
+  <li><strong>一次性处理整列（列并行）</strong>：不是逐权重，而是逐列处理，同一列内的量化独立并行</li>
+  <li><strong>懒惰批处理（Lazy Batch Update）</strong>：不是每量化一个权重就更新矩阵，而是攒一批一起更新，大幅减少内存访问</li>
+  <li><strong>Cholesky 预分解</strong>：Hessian 的逆矩阵预先算好，避免重复计算</li>
+</ol>
+
+<h2>Hessian 矩阵——量化指挥部的「敏感度地图」</h2>
+
+<p>GPTQ 的「秘密武器」是 <strong>Hessian 矩阵</strong>（记作 <strong>H</strong>）。</p>
+
+<div class="q-box">
+<strong>❓ 先问一个问题：</strong>一个权重矩阵 W，给一个输入 X，输出是 Y = WX。<br>
+现在我要量化 W。对于输出 Y 来说，<strong>哪些权重「更重要」？</strong>
+</div>
+
+<p>答案取决于两件事：</p>
+<ul>
+  <li><strong>权重大小？</strong> 不一定。一个大的权重可能对应一个总为零的输入通道。</li>
+  <li><strong>输入值？</strong> 对了！权重要乘以输入才决定输出影响。</li>
+</ul>
+
+<p>GPTQ 用校准数据集（100~200 条文本）跑一遍模型，记录每一层的输入 X，然后计算：</p>
+
+<p style="text-align: center; font-size: 1.15rem; font-family: 'Times New Roman', serif;">
+  H = 2 × X<sup>T</sup>X
+</p>
+
+<p>H 是一个 <em>d<sub>in</sub> × d<sub>in</sub></em> 的矩阵。H[i][i] 表示「如果改变第 <em>i</em> 个权重，输出会变化多少」。H[i][j] 表示「改变第 <em>i</em> 个权重后，调整第 <em>j</em> 个权重能多大程度补偿」。</p>
+
+<div class="fig">
+<pre style="background: #f8fafc; color: #1e293b; border: 1px solid #e2e8f0; font-size: .8rem; font-family: var(--sans);">
+权重矩阵 W (d_out × d_in):              Hessian 矩阵 H (d_in × d_in):
+┌ w₁₁  w₁₂  w₁₃  ... w₁ₙ ┐              ┌ h₁₁  h₁₂  h₁₃  ... h₁ₙ ┐
+│ w₂₁  w₂₂  w₂₃  ... w₂ₙ │              │ h₂₁  h₂₂  h₂₃  ... h₂ₙ │
+│  ⋮    ⋮    ⋮         ⋮  │              │  ⋮    ⋮    ⋮         ⋮  │
+└ wₘ₁  wₘ₂  wₘ₃  ... wₘₙ ┘              └ hₙ₁  hₙ₂  hₙ₃  ... hₙₙ ┘
+
+ 逐列量化, 每列独立进行                H 告诉我们权重之间的「耦合关系」
+</pre>
+<p>GPTQ 的并行化策略：一次处理一列，而不是一个权重</p>
+</div>
+
+<h2>GPTQ 算法（简化版）</h2>
+
+<p>对每一层：</p>
+
+<ol>
+  <li><strong>收集数据：</strong>用校准数据集跑一遍，记录该层的输入 X</li>
+  <li><strong>计算 H：</strong>H = 2 · X<sup>T</sup>X</li>
+  <li><strong>计算 H<sup>-1</sup>（Cholesky 分解加速）：</strong>得到逆 Hessian</li>
+  <li><strong>逐列量化并补偿：</strong><br>
+  对权重矩阵的每一列 <em>w</em>：<br>
+  <code>q = round(w / scale)</code>  ← 量化这一列<br>
+  <code>δ = (w - q·scale) / [H⁻¹]<sub>qq</sub> · H⁻¹<sub>:,q</sub></code>  ← 计算需要补偿的量<br>
+  <code>剩下的列 -= δ</code>  ← 调整还没处理的权重来补偿误差</li>
+  <li><strong>重复直到所有权重处理完</strong></li>
+</ol>
+
+<div class="callout tip">
+<strong>💡 直观理解：</strong>想象你在一个弹簧床上挖坑（量化一个权重），床会因此变形（输出误差）。你不是无视这个变形，而是<strong>按一下床的其他地方让床变回原来的形状</strong>（调整剩余权重）。Hessian 矩阵就是告诉你「按哪里有效」的说明书。
+</div>
+
+<h2>Group Size——精度的旋钮</h2>
+
+<p>GPTQ 的一个重要参数是 <strong>group size</strong>：</p>
+
+<ul>
+  <li><strong>group_size = 128</strong>：每 128 个权重共享一个 scale。精度好，但存储 scale 的开销也大。</li>
+  <li><strong>group_size = -1</strong>（等于整列）：整列共享一个 scale。省空间但精度差。</li>
+</ul>
+
+<table>
+  <tr><th>Group Size</th><th>Scale 数量</th><th>精度</th><th>额外存储开销 (7B)</th></tr>
+  <tr><td>32</td><td>很多</td><td>最佳</td><td>~128 MB</td></tr>
+  <tr><td>128</td><td>适中</td><td>很好</td><td>~32 MB</td></tr>
+  <tr><td>-1 (整列)</td><td>最少</td><td>较差</td><td>~1 MB</td></tr>
+</table>
+
+<div class="callout warn">
+<strong>⚠️ 常见选择：</strong>group_size=128 是 GPTQ 的「黄金标准」——精度和存储开销的最佳平衡。几乎所有 TheBloke 发布的 GPTQ 模型都用 128。
+</div>
+
+<h2>动手环节：GPTQ 的误差补偿模拟</h2>
+
+<div class="exercise">
+<h3>📝 练习：比较朴素量化 vs GPTQ 风格的误差补偿</h3>
+
+<p>下面的代码模拟一个 2D 权重矩阵的量化。我们比较两种策略：</p>
+<ol>
+  <li>朴素量化：独立 round 每个权重</li>
+  <li>GPTQ 风格：量化一个后，用 Hessian 信息调整剩余</li>
+</ol>
+
+<pre><code>import torch
+import numpy as np
+
+def naive_quantize(w, bits=4):
+    """独立舍入（上节课的做法）"""
+    q_max = 2**(bits - 1) - 1
+    scale = w.abs().max() / q_max
+    q = torch.round(w / scale).clamp(-q_max, q_max)
+    return q * scale  # 返回反量化后的值
+
+def gptq_quantize_2d(w, bits=4):
+    """
+    简化版 GPTQ：用 Hessian 做误差补偿（2D 演示）
+    注意：这是为教学简化的版本。真实 GPTQ 复杂得多。
+    """
+    q_max = 2**(bits - 1) - 1
+    scale = w.abs().max() / q_max
+    q = torch.zeros_like(w)
+    
+    # 人为构造一个简单的 Hessian 逆矩阵
+    # 假设权重有相关性：H_inv[i,j] 表示 w[i] 和 w[j] 的耦合
+    n = w.shape[0]
+    H_inv = torch.eye(n) * 0.5 + 0.1  # 简单的耦合模拟
+    
+    w_cur = w.clone()
+    for i in range(n):
+        # 量化第 i 个权重
+        q_i = torch.round(w_cur[i] / scale).clamp(-q_max, q_max)
+        err = w_cur[i] - q_i * scale  # 量化误差
+        
+        q[i] = q_i
+        
+        # 补偿：用 H_inv 计算如何调整剩余权重
+        if i < n - 1:
+            compensation = err / H_inv[i, i] * H_inv[i, i+1:]
+            w_cur[i+1:] -= compensation
+    
+    return q * scale
+
+# 模拟一个强相关的小权重矩阵
+torch.manual_seed(42)
+W = torch.randn(16, 1) * 0.3 + 0.5  # 16 个权重，有正相关趋势
+
+# 排序让它们更「耦合」
+W = torch.sort(W.squeeze())[0].unsqueeze(1)
+
+naive_result = naive_quantize(W)
+gptq_result = gptq_quantize_2d(W)
+
+naive_err = (W - naive_result).abs().mean().item()
+gptq_err = (W - gptq_result).abs().mean().item()
+
+print(f"原始权重:      {W.squeeze().tolist()}")
+print(f"朴素量化重建:  {naive_result.squeeze().tolist()}")
+print(f"GPTQ 风格重建: {gptq_result.squeeze().tolist()}")
+print(f"\n朴素量化平均误差: {naive_err:.4f}")
+print(f"GPTQ 风格平均误差: {gptq_err:.4f}")
+print(f"改进:           {(naive_err - gptq_err) / naive_err * 100:.1f}%")
+</code></pre>
+
+<div class="callout tip">
+<strong>试试这个扩展：</strong>改变 H_inv 的构造方式——如果我把耦合系数设成 0（即假设所有权重独立），GPTQ 的补偿会退化到朴素量化吗？如果耦合放大（比如 0.5），补偿效果会更好还是更差？
+</div>
+</div>
+
+<h2>GPTQ 的实际用法（代码一览）</h2>
+
+<p>你不会自己实现 GPTQ——有成熟的库帮你做。先有个印象就好，后续课程会动手实操：</p>
+
+<pre><code># pip install gptqmodel transformers
+
+from gptqmodel import GPTQModel, QuantizeConfig
+from transformers import AutoTokenizer
+
+model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+quant_config = QuantizeConfig(bits=4, group_size=128)
+
+model = GPTQModel.load(model_id, quant_config)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+# 校准——用 128 条文本决定量化参数
+calibration_data = ["The answer to life is", "Machine learning is", ...]
+model.quantize(calibration_data, batch_size=4)
+
+model.save("llama3-8b-gptq")  # 保存量化后的模型</code></pre>
+
+<h2>GPTQ 的优缺点</h2>
+
+<table>
+  <tr><th>优点</th><th>缺点</th></tr>
+  <tr>
+    <td>
+      <ul>
+        <li>精度高，4-bit 下 PPL 仅增加 0.3~0.5</li>
+        <li>无需重训练</li>
+        <li>支持 2/3/4/8 bit</li>
+        <li>Marlin kernel 推理极快</li>
+        <li>HuggingFace 生态完善</li>
+      </ul>
+    </td>
+    <td>
+      <ul>
+        <li>需要校准数据集（麻烦）</li>
+        <li>量化过程需要大量 CPU/GPU 内存</li>
+        <li>GPU only（没有 CPU 推理内核）</li>
+        <li>对校准数据质量敏感（过拟合风险）</li>
+        <li>量化比 AWQ 慢（需要算 Hessian）</li>
+      </ul>
+    </td>
+  </tr>
+</table>
+
+<h2>与课程地图的关联</h2>
+
+<table>
+  <tr><th>课程</th><th>内容</th><th>关系</th></tr>
+  <tr><td><a href="0001-forget-fp16.html">Lesson 1</a></td><td>朴素量化（round-to-nearest）</td><td>← GPTQ 的 baseline，比这个更好</td></tr>
+  <tr><td><a href="0002-gptq-compensation.html">Lesson 2 (本课)</a></td><td>GPTQ — Hessian 误差补偿</td><td>← 你现在在这里</td></tr>
+  <tr><td>Lesson 3</td><td>AWQ — 激活值感知量化</td><td>→ 不同思路：保护「重要」权重，不用补偿</td></tr>
+  <tr><td>Lesson 4</td><td>GGUF & K-Quants</td><td>→ 本地部署的王者格式</td></tr>
+  <tr><td>Lesson 5</td><td>实战：真正量化一个模型</td><td>→ 动手用 bitsandbytes / llama.cpp</td></tr>
+</table>
+
+<h2>推荐阅读</h2>
+
+<ul>
+  <li><a href="https://arxiv.org/abs/2210.17323" target="_blank">[原始论文] GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers</a> — Frantar et al., 2023</li>
+  <li><a href="https://huggingface.co/docs/transformers/main/quantization/gptq" target="_blank">HuggingFace GPTQ Guide</a> — 官方文档和代码示例</li>
+  <li><a href="../reference/glossary.html">量化词汇表</a> — 查术语</li>
+</ul>
+
+<h2>下一步</h2>
+
+<p>做完练习后，你可以问我：</p>
+<ul>
+  <li>"Hessian 矩阵具体怎么算？对角线上和对角线外的值各代表什么？"</li>
+  <li>"GPTQ 量化后的模型为什么推理时还要反量化？那速度不会变慢吗？"</li>
+  <li>"校准数据集选错了会怎么样？比如说用代码数据校准却在对话任务上用？"</li>
+  <li>"Marlin kernel 是什么？为什么突然快了这么多？"</li>
+</ul>
+
+<div class="footnote">
+  <p><strong>引用：</strong>Frantar et al., "GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers" (2023) | Hassibi et al., "Optimal Brain Surgeon" (1993)</p>
+  <p><strong>本课对应的学习记录：</strong>LR-0002: GPTQ 核心思想已建立</p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GGUF 量化选择速查</title>
+<style>
+ body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;max-width:960px;margin:48px auto;padding:0 24px;line-height:1.65;color:#1d1d1f;background:#fffdf8}h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid #ddd;padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}.good{color:#137333}.ok{color:#ad7b00}.warn{color:#b3261e}code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;padding:.08rem .28rem;border-radius:4px}pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px}pre code{background:transparent;padding:0;color:inherit}a{color:#2457a6}.note{background:#fff3cd;border-left:4px solid #ad7b00;padding:.8rem 1rem;margin:1rem 0}
+</style>
+</head>
+<body>
+<h1>GGUF 量化选择速查</h1>
+<p>基于 llama.cpp 官方数据与社区共识，服务于 5060 Ti 16GB 等桌面级环境。</p>
+
+<h2>量化名称解码</h2>
+<p>以 <code>Q5_K_M</code> 为例：</p>
+<ul>
+ <li><b>Q5</b>：每权重约 5 bit。</li>
+ <li><b>K</b>：K-quant（improved quantization），通常比旧版更精细。</li>
+ <li><b>M/S/L</b>：混合精度档位。M = Medium，S = Small（更省），L = Large（更保真）。</li>
+</ul>
+
+<h2>7B 级别量化对比（官方 perplexity 近似值）</h2>
+<p class="note"><b>注意：</b>Perplexity 只在同模型/同 tokenizer 内部可比，不能跨模型直接比较数值大小。官方 <a href="https://github.com/ggml-org/llama.cpp/tree/master/tools/perplexity">perplexity 工具</a> 主要用于评估量化损失。</p>
+<table>
+<thead><tr><th>量化</th><th>约大小(7B)</th><th>相对 FP16 ppl 变化</th><th>质量评价</th><th>适合场景</th></tr></thead>
+<tbody>
+ <tr><td><code>FP16</code></td><td>13.0 GB</td><td>—</td><td><span class="good">基准</span></td><td>参考值，通常不直接跑。</td></tr>
+ <tr><td><code>Q8_0</code></td><td>7.0 GB</td><td>+0.03%</td><td><span class="good">近乎无损</span></td><td>小模型、质量敏感、显存充足。</td></tr>
+ <tr><td><code>Q6_K</code></td><td>5.5 GB</td><td>+0.13%</td><td><span class="good">极好</span></td><td>高质量/体积最佳折中。</td></tr>
+ <tr><td><code>Q5_K_M</code></td><td>4.8 GB</td><td>+0.39%</td><td><span class="good">很好</span></td><td><b>16GB 显存首选候选之一</b>。</td></tr>
+ <tr><td><code>Q4_K_M</code></td><td>4.1 GB</td><td>+1.68%</td><td><span class="ok">好</span></td><td><b>常用默认推荐</b>；显存紧张或跑更大模型时。</td></tr>
+ <tr><td><code>Q4_K_S</code></td><td>3.9 GB</td><td>+2.62%</td><td><span class="ok">可接受</span></td><td>极限省空间，但可能牺牲推理质量。</td></tr>
+</tbody>
+</table>
+
+<h2>5060 Ti 16GB 显存选择策略</h2>
+<p>推理时总 VRAM 占用 ≈ 量化后权重 + KV cache + 计算缓冲 + server 开销。</p>
+<ul>
+ <li><b>7B/8B 模型：</b>Q5_K_M 通常舒适；Q4_K_M 可为长上下文留更多余量。</li>
+ <li><b>14B 模型：</b>Q5_K_M ≈ 9.6 GB；Q4_K_M ≈ 8.2 GB。若上下文长或并发高，优先 Q4_K_M。</li>
+ <li><b>22B/27B 模型：</b>Q4_K_M 约 12–14 GB，已接近上限。上下文和并发要保守。</li>
+ <li><b>32B+：</b>即使 Q4_K_M 也可能超过显存，需考虑 CPU+GPU 混合或更小量化。</li>
+</ul>
+
+<h2>找模型</h2>
+<ul>
+ <li>Hugging Face 搜索：<a href="https://huggingface.co/models?apps=llama.cpp">?apps=llama.cpp</a></li>
+ <li>模型卡要确认：Instruct / chat template / context length / license。</li>
+ <li>llama-server 可直接下载：<code>llama-server -hf user/model:Q5_K_M</code></li>
+</ul>
+
+<h2>参考</h2>
+<ul>
+ <li><a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md">官方 quantize README</a></li>
+ <li><a href="https://github.com/ggml-org/llama.cpp/tree/master/tools/perplexity">官方 perplexity 工具</a></li>
+ <li><a href="https://github.com/huggingface/skills/blob/main/skills/huggingface-local-models/references/quantization.md">Hugging Face GGUF Quantization Guide</a></li>
+</ul>
+</body>
+</html>

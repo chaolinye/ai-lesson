@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0005 — Flash Attention、KV cache 量化与显存优化</title>
+<style>
+:root{--ink:#1d1d1f;--muted:#686868;--paper:#fffdf8;--panel:#f7f1df;--line:#ded6c7;--accent:#8a5a00;--good:#137333;--bad:#b3261e;--warn:#ad7b00}
+body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;margin:0;background:var(--paper);color:var(--ink);line-height:1.65}
+main{max-width:930px;margin:0 auto;padding:48px 24px 80px}
+h1{font-size:2.25rem;line-height:1.15;margin:.2rem 0 .5rem}
+h2{margin-top:2.2rem;padding-top:1rem;border-top:1px solid var(--line)}
+h3{margin-top:1.4rem}
+.subtitle,.small{color:var(--muted)}
+.mission,.note{background:var(--panel);border-left:4px solid var(--accent);padding:1rem 1.2rem;margin:1.3rem 0}
+code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;border:1px solid #e5dccd;border-radius:4px;padding:.08rem .28rem}
+pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px;overflow:auto}
+pre code{background:transparent;border:0;color:inherit;padding:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem}
+.card{border:1px solid var(--line);border-radius:10px;padding:1rem;background:#fffaf0}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border-bottom:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}
+th{background:#f7f1df}
+button{font:inherit;padding:.45rem .75rem;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin:.25rem .3rem .25rem 0}
+.answer{margin:.5rem 0 1rem;font-weight:700}
+.good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+a{color:#2457a6}
+</style>
+</head>
+<body>
+<main>
+<p class="small">Lesson 0005 · <a href="0004-core-params-deep-dive.html">上一课</a> · <a href="../reference/llama-cpp-vram-optimization.html">显存优化速查</a> · <a href="../reference/llama-cpp-core-params.html">核心参数速查</a></p>
+
+<h1>Flash Attention、KV cache 量化与显存优化</h1>
+<p class="subtitle">今天的目标：当你的 16GB 显存遇到"模型想要更多"时，你知道按什么顺序、用什么技术来腾出空间。</p>
+
+<section class="mission">
+<b>与你的任务的关系：</b>你在前三课已经能跑起模型、选好量化、理解参数。但总有一天你会遇到——模型 14B 但显存不够、上下文想拉到 32K 但 OOM、Agent 并发请求太多。这节课就是为这些场景准备的"显存工具箱"。
+</section>
+
+<h2>1. 为什么 16GB 显存不是"16GB 可用"</h2>
+<p>第一课的心智模型更新：</p>
+<pre><code>总 VRAM = 量化后权重 + KV cache × 并发数 + 计算缓冲 + 驱动/系统开销
+
+其中：
+- 权重：量化后固定大小。选 Q5_K_M 还是 Q4_K_M 的影响。
+- KV cache：随上下文和并发增长。是优化的主要目标。
+- 计算缓冲：受 -ub、-b 影响。OOM 时可降。
+- 驱动/系统：约 0.5–1.5 GB 不可控开销。</code></pre>
+<p>所以你在 nvidia-smi 里看到 16GB，实际留给模型的可能只有 14–15 GB。加上 Windows 自身开销，有时更少。</p>
+
+<h2>2. Flash Attention — 默认就开了，但你应知道它省什么</h2>
+<p>官方 PR <a href="https://github.com/ggml-org/llama.cpp/pull/15434">#15434</a> 已使 Flash Attention 成为默认（新版本 <code>-fa auto</code> 会在支持时自动启用）。</p>
+
+<p><b>Flash Attention 解决什么问题？</b></p>
+<p>标准注意力计算需要为每个 token pair 计算注意力分数并存储中间矩阵，这需要 O(n²) 显存（n = 上下文长度）。Flash Attention 通过分块（tiling）技术，不把完整的注意力矩阵存在显存中，而是按块计算并逐步归约。</p>
+
+<ul>
+<li><b>省的是注意力计算的中间结果，不是权重。</b></li>
+<li><b>效果：</b>上下文越长，节省越显著。8K 以下差异不大；32K+ 时可能是"能跑"和"OOM"的区别。</li>
+<li><b>速度：</b>大多数 GPU 上 FA 不比标准注意力慢，有时还更快（因为减少显存带宽压力）。</li>
+<li><b>确认方法：</b>启动 server 时看日志是否有 "flash attention" 字样。</li>
+</ul>
+
+<div class="note"><b>显式启用：</b>虽然新版本 auto 通常已启用，但如果遇到 OOM 问题，可显式设 <code>-fa on</code> 确认。</div>
+
+<h2>3. KV cache 量化 — 省显存的"大杀器"</h2>
+
+<h3>原理</h3>
+<p>KV cache 默认用 f16（每个值 2 字节）存储。官方 PR <a href="https://github.com/ggml-org/llama.cpp/pull/2969">#2969</a> 引入了 K cache 的 q8_0 量化，PR <a href="https://github.com/ggml-org/llama.cpp/pull/4312">#4312</a> 扩展为支持所有量化格式。</p>
+<p>参数 <code>-ctk</code> 控制 K cache 的数据类型，<code>-ctv</code> 控制 V cache。支持：f32, f16, bf16, q8_0, q4_0, q4_1, q5_0, q5_1, iq4_nl。</p>
+
+<h3>效果对比（8B 模型）</h3>
+<table>
+<thead><tr><th>设置</th><th>每 token</th><th>8K 上下文</th><th>32K 上下文</th></tr></thead>
+<tbody>
+<tr><td>f16（默认）</td><td>~0.5 MB</td><td>~4.0 GB</td><td>~16.0 GB</td></tr>
+<tr><td><code>-ctk q8_0 -ctv q8_0</code></td><td>~0.25 MB</td><td>~2.0 GB</td><td>~8.0 GB</td></tr>
+<tr><td><code>-ctk q4_0 -ctv q4_0</code></td><td>~0.125 MB</td><td>~1.0 GB</td><td>~4.0 GB</td></tr>
+</tbody>
+</table>
+
+<p><b>建议：</b></p>
+<ul>
+<li>上下文 ≤ 8K：默认 f16 即可。</li>
+<li>上下文 8K–32K：<code>-ctk q8_0 -ctv q8_0</code> 是安全的折中。</li>
+<li>上下文 > 32K 或并发高：考虑 <code>-ctk q4_0 -ctv q4_0</code>。</li>
+</ul>
+
+<div class="note"><b>质量影响：</b>KV cache 量化对质量的影响通常小于权重量化。社区经验是 q8_0 KV cache 的质量损失几乎不可察觉。</div>
+
+<h2>4. 其他显存优化技术</h2>
+
+<h3>4.1 降低 GPU offload（<code>-ngl</code>）</h3>
+<p>如果总显存不够，把部分层从 GPU 移回 CPU。代价是速度下降。对于 decoder-only 模型，<b>靠近输出的层（后几层）</b>的每 token 计算量其实不大，留在 CPU 影响相对较小。</p>
+
+<h3>4.2 降低 ubatch（<code>-ub</code>）</h3>
+<p>物理 micro-batch 控制每一步送入 GPU 的数据量。降低 <code>-ub</code> 可以降低 prefill 阶段的峰值显存，但 prefill 速度会变慢。作为 OOM 安全阀很有效。</p>
+
+<h3>4.3 Context shift（<code>--context-shift</code>）</h3>
+<p>当上下文超出限制时，滑动窗口丢弃最早的 token，而不是报错。这在长对话场景中很有用，但会丢失早期上下文。</p>
+
+<h3>4.4 模型层面：选更低量化或更小模型</h3>
+<p>如果优化技术都用完了还是不够，最终的退路是：选更小模型（7B→3B）、更低量化（Q5_K_M→Q4_K_M→Q3_K_M）。</p>
+
+<h2>5. 场景决策树</h2>
+<p>当你遇到 OOM 时，按这个顺序排查：</p>
+<pre><code>遇到 OOM？
+│
+├─ 降低 -ub（安全阀，立即见效）
+│
+├─ 确认 -fa on（Flash Attention）
+│
+├─ 确认 -ngl 不是设太高（尤其是大模型）
+│
+├─ 降低 -c（上下文大小）
+│
+├─ 降低 -np（并发数）
+│
+├─ 启用 KV cache 量化：-ctk q8_0 -ctv q8_0
+│
+├─ 降低量化：Q5_K_M → Q4_K_M → Q3_K_M
+│
+└─ 换更小模型：14B → 8B → 7B → 3B</code></pre>
+
+<h2>6. 实战：不同场景的 16GB 配置</h2>
+
+<div class="card">
+<b>场景 A：8B Q5_K_M，8K 上下文，单并发</b><br>
+<pre><code>-ngl all -c 8192 -fa on -np 1 -ctk f16 -ctv f16</code></pre>
+约 11.5 GB，舒适。
+</div>
+
+<div class="card">
+<b>场景 B：8B Q5_K_M，32K 上下文，单并发</b><br>
+<pre><code>-ngl all -c 32768 -fa on -np 1 -ctk q8_0 -ctv q8_0</code></pre>
+权重 5.5 GB + KV cache ~8 GB = ~15.5 GB（含余量临界）。如果 OOM 试 -ctk q4_0。
+</div>
+
+<div class="card">
+<b>场景 C：14B Q4_K_M，8K 上下文，单并发</b><br>
+<pre><code>-ngl all -c 8192 -fa on -np 1 -ctk q8_0 -ctv q8_0</code></pre>
+权重 ~8.2 GB + KV cache ~3.5 GB + 余量 ~2 GB ≈ 13.7 GB。可行。
+</div>
+
+<div class="card">
+<b>场景 D：8B Q4_K_M，8K 上下文，4 并发（Agent 多请求）</b><br>
+<pre><code>-ngl all -c 8192 -fa on -np 4 -ctk q8_0 -ctv q8_0</code></pre>
+权重 ~4.1 GB + KV cache ×4 ≈ 8 GB + 余量 ~2 GB ≈ 14.1 GB。有风险，可再压 -ctk q4_0。
+</div>
+
+<h2>7. 如何验证优化效果</h2>
+<ol>
+<li><b>nvidia-smi：</b>观察显存使用量变化。</li>
+<li><b>server 日志：</b>启动时打印 offloaded layers、VRAM 使用。</li>
+<li><b>实验：</b>改变一个参数，观察显存变化，确认你的理解。</li>
+<li><b>生成质量：</b>量化 KV cache 后对比输出，确认可接受。</li>
+</ol>
+
+<h2>8. 检索练习</h2>
+
+<div class="card"><p><b>Q1.</b> Flash Attention 主要省的是权重显存、KV cache 显存，还是注意力中间结果的显存？</p><button onclick="show('a1')">查看答案</button><div id="a1" class="answer"></div></div>
+<div class="card"><p><b>Q2.</b> 为什么说 KV cache 量化到 q8_0 "几乎无损"？</p><button onclick="show('a2')">查看答案</button><div id="a2" class="answer"></div></div>
+<div class="card"><p><b>Q3.</b> 你 16GB 显存跑 14B Q4_K_M 模型，32K 上下文。用 f16 KV cache 会怎样？如何解决？</p><button onclick="show('a3')">查看答案</button><div id="a3" class="answer"></div></div>
+
+<h2>下一课</h2>
+<p>建议下一课：<b>启动 Agent 对接：配置 API key、处理并发请求、JSON schema 约束输出格式</b>。把 llama.cpp server 真正变成 Agent 可以调用的后端服务。</p>
+
+<h2>推荐主源</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp/pull/15434">PR #15434 — Flash Attention 成为默认</a></li>
+<li><a href="https://github.com/ggml-org/llama.cpp/discussions/8879">Discussion #8879 — 不降上下文如何降低显存</a></li>
+<li><a href="https://github.com/ggml-org/llama.cpp/pull/4312">PR #4312 — K cache 量化</a></li>
+</ul>
+<p class="small">对显存占用有具体场景需要估算？告诉我模型大小、量化、上下文、并发数，我帮你算。</p>
+</main>
+<script>
+function show(id){
+ const m={
+  a1:'注意力计算的中间结果。Flash Attention 通过分块（tiling）避免存储完整的 O(n²) 注意力矩阵，从而节省显存。',
+  a2:'KV cache 的 q8_0 相比 f16 只损失约 0.5–1% 精度，因为缓存的是中间激活值而非权重。社区经验显示其对最终输出质量的影响远小于权重量化。',
+  a3:'14B Q4_K_M 权重 ~8.2 GB + 32K f16 KV cache ~14 GB ≈ 22.2 GB >> 16 GB，直接 OOM。解决：-ctk q8_0 -ctv q8_0（KV cache ~7 GB）→ 总 ~17.2 GB，仍超限，再降 -ngl 或换 q4_0 KV cache。'
+ };
+ document.getElementById(id).innerHTML='<span class="good">答案：</span>'+m[id];
+}
+</script>
+</body>
+</html>

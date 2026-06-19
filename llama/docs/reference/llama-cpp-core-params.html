@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama.cpp 核心参数速查</title>
+<style>
+ body{font-family:ui-serif,Georgia,"Noto Serif SC",serif;max-width:960px;margin:48px auto;padding:0 24px;line-height:1.65;color:#1d1d1f;background:#fffdf8}
+ h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}
+ table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border-bottom:1px solid #ddd;padding:.55rem;text-align:left;vertical-align:top}th{background:#f7f1df}
+ code{font-family:Consolas,ui-monospace,monospace;background:#f0eadf;padding:.08rem .28rem;border-radius:4px}
+ pre{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:8px}pre code{background:transparent;padding:0;color:inherit}
+ a{color:#2457a6}.note{background:#f7f1df;border-left:4px solid #8a5a00;padding:.8rem 1rem;margin:1rem 0}
+ .cat{font-weight:700;color:#8a5a00;margin-top:1rem}
+</style>
+</head>
+<body>
+<h1>llama.cpp 核心参数速查</h1>
+<p>官方来源：<a href="https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md">server README</a>。参数默认值以最新版本为准。</p>
+
+<h2>模型加载</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用</th></tr>
+<tr><td><code>-m, --model FNAME</code></td><td>—</td><td>模型 GGUF 文件路径。</td></tr>
+<tr><td><code>-hf, --hf-repo user/model[:quant]</code></td><td>—</td><td>从 Hugging Face 下载并运行。量化可选，默认 Q4_K_M。</td></tr>
+</table>
+
+<h2>GPU / 加速</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用</th></tr>
+<tr><td><code>-ngl, --n-gpu-layers N</code></td><td>auto</td><td>将多少层 offload 到 GPU。可选数字 / auto / all。</td></tr>
+<tr><td><code>-sm, --split-mode</code></td><td>layer</td><td>多 GPU 切分模式：none / layer / row / tensor。</td></tr>
+<tr><td><code>-dev, --device</code></td><td>—</td><td>指定 GPU 设备。none = 不 offload。</td></tr>
+<tr><td><code>-t, --threads N</code></td><td>-1 (auto)</td><td>CPU 线程数。GPU offload 多时仍影响采样等操作。</td></tr>
+<tr><td><code>-fa, --flash-attn</code></td><td>auto</td><td>Flash Attention：on / off / auto。可显著降低 KV cache 显存。</td></tr>
+</table>
+
+<h2>上下文 / KV cache</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用</th></tr>
+<tr><td><code>-c, --ctx-size N</code></td><td>0 (模型默认)</td><td>上下文大小。直接影响 KV cache 占用。</td></tr>
+<tr><td><code>-ctk, --cache-type-k TYPE</code></td><td>f16</td><td>K cache 数据类型。可设为 q8_0 / q4_0 等量化格式节省显存。</td></tr>
+<tr><td><code>-ctv, --cache-type-v TYPE</code></td><td>f16</td><td>V cache 数据类型。同上。</td></tr>
+<tr><td><code>-kvo, --kv-offload</code></td><td>enabled</td><td>KV cache 是否 offload 到 GPU（默认开启）。</td></tr>
+<tr><td><code>--mlock</code></td><td>off</td><td>将模型锁定在 RAM 中，防止 swap。</td></tr>
+<tr><td><code>--mmap, --no-mmap</code></td><td>enabled</td><td>是否内存映射模型文件。关闭则加载更慢，但可能减少 pageout。</td></tr>
+</table>
+
+<h2>Batch / 并发</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用</th></tr>
+<tr><td><code>-b, --batch-size N</code></td><td>2048</td><td>逻辑 batch 大小。影响 prompt processing 阶段的计算并行度。</td></tr>
+<tr><td><code>-ub, --ubatch-size N</code></td><td>512</td><td>物理 micro-batch。在显存/内存限制内切分 batch。</td></tr>
+<tr><td><code>-np, --parallel N</code></td><td>-1 (auto)</td><td>server 并行 slot 数。每个 slot 处理一个请求。</td></tr>
+<tr><td><code>-cb, --cont-batching</code></td><td>enabled</td><td>continuous batching（动态批处理）。多用户时保持高吞吐。</td></tr>
+</table>
+
+<h2>生成 / 采样</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用</th></tr>
+<tr><td><code>-n, --n-predict N</code></td><td>-1 (无限)</td><td>最多生成多少 token。设为 -1 不限，-2 直到填满上下文。</td></tr>
+<tr><td><code>--temp, --temperature N</code></td><td>0.80</td><td>温度。越高越随机，越低越确定。</td></tr>
+<tr><td><code>--top-p N</code></td><td>0.95</td><td>Top-p nucleus 采样。只在累计概率达 p 的 token 中采样。</td></tr>
+<tr><td><code>--top-k N</code></td><td>40</td><td>只从概率最高的 k 个 token 中采样。0 = 禁用。</td></tr>
+<tr><td><code>--min-p N</code></td><td>0.05</td><td>Min-p 采样。忽略概率低于最高概率 × min-p 的 token。0 = 禁用。</td></tr>
+<tr><td><code>-s, --seed SEED</code></td><td>-1 (随机)</td><td>随机种子。固定种子可复现输出。</td></tr>
+<tr><td><code>--repeat-penalty N</code></td><td>1.00</td><td>重复惩罚。>1.0 减少重复，1.0 = 禁用。</td></tr>
+<tr><td><code>--mirostat N</code></td><td>0 (禁用)</td><td>Mirostat 采样。1 或 2 启用，自动调整 temperature。</td></tr>
+</table>
+
+<h2>Server 网络</h2>
+<table>
+<tr><th>参数</th><th>默认</th><th>作用</th></tr>
+<tr><td><code>--host HOST</code></td><td>127.0.0.1</td><td>监听地址。仅本机用 127.0.0.1；局域网用 0.0.0.0。</td></tr>
+<tr><td><code>--port PORT</code></td><td>8080</td><td>HTTP 端口。</td></tr>
+<tr><td><code>--api-key KEY</code></td><td>—</td><td>API 认证密钥。可设多个逗号分隔。</td></tr>
+<tr><td><code>--embedding</code></td><td>off</td><td>仅启用 embedding 模式（节省显存）。</td></tr>
+</table>
+
+<h2>显存估算公式</h2>
+<pre><code>总 VRAM ≈ 量化后权重 + KV cache × 并发 + 计算缓冲 + 驱动/系统开销
+
+KV cache per context token ≈ 2 × hidden_size × num_layers × bytes_per_element
+ (× 2 是因为 K 和 V 各一份)
+
+示例：8B 模型，hidden=4096, layers=32, f16 KV cache (2 bytes)
+ 每 token KV cache = 2 × 4096 × 32 × 2 = 524,288 bytes ≈ 0.5 MB/token
+ 8192 上下文 → KV cache ≈ 4 GB
+ 每多一个并发 slot 就多一份。</code></pre>
+
+<p class="note">Q5_K_M 8B 权重 ≈ 5.5 GB + KV cache 4 GB (8K ctx) + 2 GB 余量 ≈ 11.5 GB。16GB 显存仍有余。</p>
+</body>
+</html>
